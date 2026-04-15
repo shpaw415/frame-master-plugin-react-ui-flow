@@ -1,3 +1,4 @@
+```ts
 import type { FrameMasterConfig } from "frame-master/server/types";
 import UIFlowPlugin from "frame-master-plugin-react-ui-flow";
 
@@ -18,3 +19,4 @@ const config: FrameMasterConfig = {
 };
 
 export default config;
+```
