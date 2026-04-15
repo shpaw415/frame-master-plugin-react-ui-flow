@@ -8,7 +8,7 @@ function createLocatorUri(values: Record<string, string>) {
 		scheme: "vscode",
 		authority:
 			"m2tech-solutions.frame-master-react-ui-flow-locator-range-handler",
-		path: "/open",
+		path: values.previewUrl ? "/webview" : "/open",
 		query: new URLSearchParams(values).toString(),
 	});
 }
@@ -107,5 +107,80 @@ suite("Locator Range Handler", () => {
 		assert.strictEqual(selection.start.column, 3);
 		assert.strictEqual(selection.end.line, 4);
 		assert.strictEqual(selection.end.column, 24);
+	});
+
+	test("accepts webview messages with locator requests", () => {
+		const request = __testHooks.parseLocatorRequest(
+			createLocatorUri({
+				projectPath: "/workspace/certorify",
+				filePath: "/src/App.tsx",
+				line: "10",
+				column: "6",
+				env: "linux",
+			}),
+		);
+
+		assert.strictEqual(
+			__testHooks.isLocatorWebviewMessage({
+				type: "open-locator",
+				request,
+			}),
+			true,
+		);
+	});
+
+	test("parses webview panel state with preview url", () => {
+		const state = __testHooks.parseLocatorPanelState(
+			createLocatorUri({
+				projectPath: "/workspace/certorify",
+				filePath: "/src/App.tsx",
+				line: "14",
+				column: "9",
+				env: "linux",
+				previewUrl: "http://127.0.0.1:3000/app",
+				previewTitle: "Certorify Preview",
+			}),
+		);
+
+		assert.strictEqual(state.previewTitle, "Certorify Preview");
+		assert.strictEqual(state.previewOrigin, "http://127.0.0.1:3000");
+		assert.match(
+			state.previewSourceUrl,
+			/http:\/\/127\.0\.0\.1:3000\/app\?frameMasterPreview=vscode/,
+		);
+	});
+
+	test("accepts locator uri relay messages", () => {
+		assert.strictEqual(
+			__testHooks.isLocatorUriMessage({
+				type: "open-locator-uri",
+				href: "vscode://m2tech-solutions.frame-master-react-ui-flow-locator-range-handler/webview?projectPath=/workspace&filePath=/src/App.tsx&line=1&column=1&env=linux",
+			}),
+			true,
+		);
+	});
+
+	test("renders webview html with source action", () => {
+		const state = __testHooks.parseLocatorPanelState(
+			createLocatorUri({
+				projectPath: "/workspace/certorify",
+				filePath: "/src/App.tsx",
+				line: "14",
+				column: "9",
+				env: "linux",
+				previewUrl: "http://127.0.0.1:3000/app",
+			}),
+		);
+
+		const html = __testHooks.getWebviewHtml(state);
+
+		assert.match(html, /Open Current Source/);
+		assert.match(html, /Reload Preview/);
+		assert.match(html, /acquireVsCodeApi\(\)/);
+		assert.match(html, /type:\s*"open-locator"/);
+		assert.match(html, /type:\s*"open-locator-uri"/);
+		assert.match(html, /iframe id="preview-frame"/);
+		assert.match(html, /frameMasterPreview=vscode/);
+		assert.match(html, /\/workspace\/certorify\/src\/App\.tsx/);
 	});
 });

@@ -41,6 +41,35 @@ type LocatorRequest = {
 	documentTarget: DocumentTarget;
 };
 
+type LocatorWebviewMessage = {
+	type: "open-locator";
+	request: LocatorRequest;
+};
+
+type LocatorUriMessage = {
+	type: "open-locator-uri";
+	href: string;
+};
+
+type LocatorPanelState = {
+	request: LocatorRequest;
+	previewUrl: string;
+	previewTitle: string;
+	previewOrigin: string;
+	previewSourceUrl: string;
+};
+
+const WEBVIEW_PANEL_VIEW_TYPE =
+	"frameMasterReactUiFlowLocatorRangeHandler.preview";
+const WEBVIEW_PANEL_TITLE = "Frame Master UI Flow";
+const PREVIEW_URL_QUERY_KEY = "previewUrl";
+const PREVIEW_TITLE_QUERY_KEY = "previewTitle";
+const PREVIEW_MODE_QUERY_KEY = "frameMasterPreview";
+const PREVIEW_MODE_QUERY_VALUE = "vscode";
+const PREVIEW_BRIDGE_MESSAGE_TYPE = "frame-master-open-locator-uri";
+
+let locatorWebviewPanel: vscode.WebviewPanel | undefined;
+
 function normalizePosixPath(filePath: string) {
 	return filePath.replace(/\\/g, "/");
 }
@@ -109,6 +138,44 @@ function parseLocatorRequest(uri: vscode.Uri): LocatorRequest {
 		startColumnOneBased,
 		startColumnZero,
 		documentTarget: getDocumentTarget(fullPath, env, distro),
+	};
+}
+
+function appendQueryValue(url: string, key: string, value: string) {
+	const parsedUrl = new URL(url);
+	parsedUrl.searchParams.set(key, value);
+	return parsedUrl.toString();
+}
+
+function parseLocatorPanelState(uri: vscode.Uri): LocatorPanelState {
+	const params = new URLSearchParams(uri.query);
+	const previewUrl = getQueryValue(params, PREVIEW_URL_QUERY_KEY);
+	const previewTitle = getQueryValue(params, PREVIEW_TITLE_QUERY_KEY);
+	const request = parseLocatorRequest(uri);
+
+	if (!previewUrl) {
+		return {
+			request,
+			previewUrl: "",
+			previewTitle: previewTitle || WEBVIEW_PANEL_TITLE,
+			previewOrigin: "",
+			previewSourceUrl: "",
+		};
+	}
+
+	const previewSourceUrl = appendQueryValue(
+		previewUrl,
+		PREVIEW_MODE_QUERY_KEY,
+		PREVIEW_MODE_QUERY_VALUE,
+	);
+	const previewOrigin = new URL(previewSourceUrl).origin;
+
+	return {
+		request,
+		previewUrl,
+		previewTitle: previewTitle || WEBVIEW_PANEL_TITLE,
+		previewOrigin,
+		previewSourceUrl,
 	};
 }
 
@@ -186,8 +253,71 @@ function toEditorRange(location: SelectionLocation) {
 	);
 }
 
-async function openLocatorRange(uri: vscode.Uri) {
-	const request = parseLocatorRequest(uri);
+function isDocumentTarget(value: unknown): value is DocumentTarget {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+
+	if ((value as DocumentTarget).scheme === "file") {
+		return typeof (value as FileDocumentTarget).filePath === "string";
+	}
+
+	if ((value as DocumentTarget).scheme === "vscode-remote") {
+		return (
+			typeof (value as RemoteDocumentTarget).authority === "string" &&
+			typeof (value as RemoteDocumentTarget).path === "string"
+		);
+	}
+
+	return false;
+}
+
+function isLocatorRequest(value: unknown): value is LocatorRequest {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+
+	const request = value as LocatorRequest;
+	return (
+		typeof request.fullPath === "string" &&
+		typeof request.env === "string" &&
+		typeof request.distro === "string" &&
+		typeof request.startLine === "number" &&
+		typeof request.startColumnOneBased === "number" &&
+		typeof request.startColumnZero === "number" &&
+		isDocumentTarget(request.documentTarget)
+	);
+}
+
+function isLocatorWebviewMessage(
+	value: unknown,
+): value is LocatorWebviewMessage {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		(value as LocatorWebviewMessage).type === "open-locator" &&
+		isLocatorRequest((value as LocatorWebviewMessage).request)
+	);
+}
+
+function isLocatorUriMessage(value: unknown): value is LocatorUriMessage {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		(value as LocatorUriMessage).type === "open-locator-uri" &&
+		typeof (value as LocatorUriMessage).href === "string"
+	);
+}
+
+function escapeHtml(value: string) {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/\"/g, "&quot;");
+}
+
+async function openLocatorRequest(request: LocatorRequest) {
 	const documentUri = toDocumentUri(
 		request.fullPath,
 		request.env,
@@ -207,23 +337,361 @@ async function openLocatorRange(uri: vscode.Uri) {
 	editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
 }
 
+function getWebviewHtml(state: LocatorPanelState) {
+	const requestJson = JSON.stringify(state.request)
+		.replace(/</g, "\\u003c")
+		.replace(/>/g, "\\u003e");
+	const previewTitle = escapeHtml(state.previewTitle || WEBVIEW_PANEL_TITLE);
+	const pathLabel = escapeHtml(state.request.fullPath);
+	const envLabel = escapeHtml(state.request.env || "local");
+	const locationLabel = `${state.request.startLine}:${state.request.startColumnOneBased}`;
+	const previewSourceUrl = state.previewSourceUrl
+		? escapeHtml(state.previewSourceUrl)
+		: "";
+	const previewOriginJson = JSON.stringify(state.previewOrigin)
+		.replace(/</g, "\\u003c")
+		.replace(/>/g, "\\u003e");
+	const bridgeMessageTypeJson = JSON.stringify(PREVIEW_BRIDGE_MESSAGE_TYPE);
+	const iframeMarkup = state.previewSourceUrl
+		? `<iframe id="preview-frame" src="${previewSourceUrl}" title="${previewTitle}"></iframe>`
+		: `<section class="empty-state"><p>No preview URL was configured for this webview target.</p><p>Add <code>webviewUrl</code> to the plugin config to load your local app inside VS Code.</p></section>`;
+
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${previewTitle}</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: https: http:; frame-src https: http:; connect-src https: http:;">
+<style>
+	:root {
+		color-scheme: light dark;
+		font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+		--panel: color-mix(in srgb, var(--vscode-editor-background) 82%, #c97f35 18%);
+		--panel-border: color-mix(in srgb, var(--vscode-panel-border) 60%, #d38b2d 40%);
+		--accent: #d38b2d;
+		--ink: var(--vscode-editor-foreground);
+		--muted: color-mix(in srgb, var(--vscode-descriptionForeground) 72%, var(--vscode-editor-foreground) 28%);
+	}
+	body {
+		margin: 0;
+		min-height: 100vh;
+		color: var(--ink);
+		background:
+			radial-gradient(circle at top left, color-mix(in srgb, var(--vscode-editor-background) 62%, #d38b2d 38%), transparent 28%),
+			linear-gradient(135deg, color-mix(in srgb, var(--vscode-editor-background) 94%, #22160c 6%), var(--vscode-editor-background));
+	}
+	main {
+		min-height: 100vh;
+		display: grid;
+		grid-template-rows: auto 1fr;
+	}
+	.shell {
+		display: grid;
+		grid-template-columns: minmax(280px, 360px) 1fr;
+		gap: 18px;
+		padding: 18px;
+	}
+	.sidebar,
+	.stage {
+		border: 1px solid var(--panel-border);
+		background: color-mix(in srgb, var(--panel) 90%, transparent 10%);
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.22);
+		backdrop-filter: blur(18px);
+	}
+	.sidebar {
+		border-radius: 22px;
+		padding: 22px;
+		display: grid;
+		align-content: start;
+		gap: 18px;
+	}
+	.stage {
+		border-radius: 28px;
+		overflow: hidden;
+		display: grid;
+		grid-template-rows: auto 1fr;
+	}
+	.stage-frame {
+		min-height: 0;
+		background: color-mix(in srgb, var(--vscode-editor-background) 88%, #140e08 12%);
+	}
+	h1 {
+		margin: 0;
+		font-size: clamp(1.6rem, 2vw, 2.1rem);
+		line-height: 1.05;
+		letter-spacing: -0.03em;
+	}
+	.header-copy {
+		display: grid;
+		gap: 10px;
+	}
+	.kicker {
+		font-family: "Courier New", monospace;
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.18em;
+		color: var(--accent);
+	}
+	.card {
+		border: 1px solid color-mix(in srgb, var(--panel-border) 72%, transparent 28%);
+		border-radius: 16px;
+		padding: 16px;
+		background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 94%, white 6%), color-mix(in srgb, var(--panel) 86%, transparent 14%));
+	}
+	dl {
+		display: grid;
+		grid-template-columns: 92px 1fr;
+		gap: 8px 12px;
+		margin: 0;
+	}
+	dt {
+		font-weight: 600;
+	}
+	dd {
+		margin: 0;
+		word-break: break-word;
+		color: var(--muted);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+	button {
+		width: fit-content;
+		padding: 11px 16px;
+		border: 1px solid transparent;
+		border-radius: 999px;
+		cursor: pointer;
+		font: inherit;
+		color: var(--vscode-button-foreground);
+		background: var(--vscode-button-background);
+		transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+	}
+	button:hover {
+		background: var(--vscode-button-hoverBackground);
+		transform: translateY(-1px);
+	}
+	button.secondary {
+		color: var(--ink);
+		background: transparent;
+		border-color: color-mix(in srgb, var(--panel-border) 68%, transparent 32%);
+	}
+	p {
+		margin: 0;
+		line-height: 1.5;
+		color: var(--muted);
+	}
+	code {
+		font-family: "Courier New", monospace;
+		font-size: 0.92em;
+	}
+	.stage-bar {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+		padding: 14px 18px;
+		border-bottom: 1px solid color-mix(in srgb, var(--panel-border) 74%, transparent 26%);
+		background: linear-gradient(90deg, color-mix(in srgb, var(--panel) 82%, #1a1109 18%), color-mix(in srgb, var(--panel) 94%, transparent 6%));
+	}
+	.stage-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+	.pill {
+		padding: 6px 10px;
+		border-radius: 999px;
+		font-family: "Courier New", monospace;
+		font-size: 0.78rem;
+		color: var(--ink);
+		background: color-mix(in srgb, var(--vscode-editor-background) 74%, var(--accent) 26%);
+	}
+	iframe {
+		width: 100%;
+		height: 100%;
+		border: 0;
+		background: white;
+	}
+	.empty-state {
+		height: 100%;
+		display: grid;
+		place-content: center;
+		gap: 10px;
+		padding: 32px;
+		text-align: center;
+	}
+	@media (max-width: 960px) {
+		.shell {
+			grid-template-columns: 1fr;
+		}
+		.stage {
+			min-height: 60vh;
+		}
+	}
+</style>
+</head>
+<body>
+<main>
+	<section class="shell">
+		<aside class="sidebar">
+			<div class="header-copy">
+				<div class="kicker">Frame Master Preview</div>
+				<h1>${previewTitle}</h1>
+				<p>The preview runs inside VS Code. LocatorJS clicks from the embedded app are bridged back into the extension so source navigation stays inside the editor.</p>
+			</div>
+			<section class="card">
+				<dl>
+					<dt>File</dt>
+					<dd><code>${pathLabel}</code></dd>
+					<dt>Location</dt>
+					<dd><code>${locationLabel}</code></dd>
+					<dt>Environment</dt>
+					<dd><code>${envLabel}</code></dd>
+				</dl>
+			</section>
+			<div class="actions">
+				<button id="open-source" type="button">Open Current Source</button>
+				<button class="secondary" id="reload-preview" type="button">Reload Preview</button>
+			</div>
+		</aside>
+		<section class="stage">
+			<div class="stage-bar">
+				<div class="stage-meta">
+					<span class="pill">${envLabel}</span>
+					<span class="pill">${escapeHtml(state.previewUrl || "No preview URL")}</span>
+				</div>
+				<span class="pill">Locator bridge live</span>
+			</div>
+			<div class="stage-frame">
+				${iframeMarkup}
+			</div>
+		</section>
+	</section>
+</main>
+<script>
+	const vscode = acquireVsCodeApi();
+	const request = ${requestJson};
+	const previewOrigin = ${previewOriginJson};
+	const bridgeMessageType = ${bridgeMessageTypeJson};
+	const previewFrame = document.getElementById("preview-frame");
+	document.getElementById("open-source")?.addEventListener("click", () => {
+		vscode.postMessage({ type: "open-locator", request });
+	});
+	document.getElementById("reload-preview")?.addEventListener("click", () => {
+		if (previewFrame instanceof HTMLIFrameElement && previewFrame.src) {
+			previewFrame.src = previewFrame.src;
+		}
+	});
+	window.addEventListener("message", (event) => {
+		if (previewOrigin && event.origin !== previewOrigin) {
+			return;
+		}
+
+		const data = event.data;
+
+		if (!data || typeof data !== "object") {
+			return;
+		}
+
+		if (data.type !== bridgeMessageType || typeof data.href !== "string") {
+			return;
+		}
+
+		vscode.postMessage({ type: "open-locator-uri", href: data.href });
+	});
+</script>
+</body>
+</html>`;
+}
+
+async function openLocatorRange(uri: vscode.Uri) {
+	const request = parseLocatorRequest(uri);
+	await openLocatorRequest(request);
+}
+
+function openLocatorWebview(context: vscode.ExtensionContext, uri: vscode.Uri) {
+	const state = parseLocatorPanelState(uri);
+
+	if (!locatorWebviewPanel) {
+		locatorWebviewPanel = vscode.window.createWebviewPanel(
+			WEBVIEW_PANEL_VIEW_TYPE,
+			WEBVIEW_PANEL_TITLE,
+			vscode.ViewColumn.Beside,
+			{ enableScripts: true, retainContextWhenHidden: true },
+		);
+
+		locatorWebviewPanel.onDidDispose(
+			() => {
+				locatorWebviewPanel = undefined;
+			},
+			null,
+			context.subscriptions,
+		);
+
+		locatorWebviewPanel.webview.onDidReceiveMessage(
+			(message: unknown) => {
+				if (isLocatorWebviewMessage(message)) {
+					void openLocatorRequest(message.request).catch((error) => {
+						const messageText =
+							error instanceof Error ? error.message : "Unknown Locator error.";
+						void vscode.window.showErrorMessage(`LocatorJS: ${messageText}`);
+					});
+					return;
+				}
+
+				if (!isLocatorUriMessage(message)) {
+					return;
+				}
+
+				void openLocatorRange(vscode.Uri.parse(message.href)).catch((error) => {
+					const messageText =
+						error instanceof Error ? error.message : "Unknown Locator error.";
+					void vscode.window.showErrorMessage(`LocatorJS: ${messageText}`);
+				});
+			},
+			null,
+			context.subscriptions,
+		);
+	}
+
+	locatorWebviewPanel.title = `${state.previewTitle}: ${state.request.startLine}:${state.request.startColumnOneBased}`;
+	locatorWebviewPanel.webview.html = getWebviewHtml(state);
+	locatorWebviewPanel.reveal(vscode.ViewColumn.Beside, true);
+}
+
 export const __testHooks = {
 	normalizePosixPath,
 	getDocumentTarget,
 	parseLocatorRequest,
+	parseLocatorPanelState,
+	appendQueryValue,
 	getSelectionRange,
 	toEditorRange,
+	isLocatorRequest,
+	isLocatorWebviewMessage,
+	isLocatorUriMessage,
+	getWebviewHtml,
 };
 
 export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
 			handleUri(uri: vscode.Uri) {
-				if (uri.path !== "/open") {
+				const action =
+					uri.path === "/open"
+						? openLocatorRange(uri)
+						: uri.path === "/webview"
+							? Promise.resolve(openLocatorWebview(context, uri))
+							: undefined;
+
+				if (!action) {
 					return;
 				}
 
-				return openLocatorRange(uri).catch((error) => {
+				return Promise.resolve(action).catch((error) => {
 					const message =
 						error instanceof Error ? error.message : "Unknown Locator error.";
 					void vscode.window.showErrorMessage(`LocatorJS: ${message}`);

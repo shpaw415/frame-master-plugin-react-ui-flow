@@ -85,9 +85,34 @@ Optional boolean.
 - `false` or omitted: VS Code links use the normal `vscode://file/...` or `vscode://vscode-remote/...` format.
 - `true`: VS Code links target the companion URI handler extension so the editor can expand the selection to the full JSX node.
 
-## Optional VS Code range handler
+### `useWebview`
 
-When `editor: "vscode"` and `useRangeHandler: true`, the plugin targets the local URI handler extension with the id:
+Optional boolean.
+
+- `false` or omitted: the plugin opens source locations directly through standard VS Code links or the range-handler URI flow.
+- `true`: when `editor` is `vscode`, the plugin targets the extension's `/webview` route. The companion extension can open a VS Code preview panel, load your app in an iframe, and relay LocatorJS clicks from inside that preview back into the editor.
+
+`useWebview` takes precedence over `useRangeHandler` for VS Code targets.
+
+### `webviewUrl`
+
+Optional string.
+
+- Used only when `editor` is `vscode` and `useWebview` is `true`.
+- The extension loads this URL inside the preview panel iframe.
+- The plugin appends `?frameMasterPreview=vscode` or `&frameMasterPreview=vscode` to the URL so the injected bridge can detect preview mode.
+
+Use a URL that the local VS Code UI host can reach. For local development that is typically something like `http://127.0.0.1:3000`.
+
+### `webviewTitle`
+
+Optional string.
+
+- Overrides the webview panel title shown by the companion VS Code extension.
+
+## Optional VS Code handler extension
+
+When `editor: "vscode"` and either `useRangeHandler: true` or `useWebview: true`, the plugin targets the local URI handler extension with the id:
 
 ```text
 m2tech-solutions.frame-master-react-ui-flow-locator-range-handler
@@ -121,6 +146,18 @@ UIFlowPlugin({
 });
 ```
 
+### Linux + VS Code Webview
+
+```ts
+UIFlowPlugin({
+  env: "linux",
+  editor: "vscode",
+  useWebview: true,
+  webviewUrl: "http://127.0.0.1:3000",
+  webviewTitle: "Certorify Preview",
+});
+```
+
 ### Windows + Cursor
 
 ```ts
@@ -144,7 +181,7 @@ UIFlowPlugin({
 
 During transformation, the plugin records the JSX opening location and source file path on each element. LocatorJS uses those attributes in the browser to open the corresponding file and position in the editor.
 
-When the optional VS Code URI handler is installed, the URI target opens the file and expands the selection to the full JSX element or fragment that begins at that source location.
+When the optional VS Code handler extension is installed, the URI target can either open the file directly or load a VS Code preview panel. In preview mode, the plugin also installs a browser-side bridge that intercepts LocatorJS VS Code links inside the iframe and relays them back to the parent webview so the extension can still open and expand the matching JSX node.
 
 ## License
 

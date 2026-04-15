@@ -13,10 +13,16 @@ export type UIFlowPluginConfig = {
 	env: "windows" | "wsl" | "linux";
 	editor: "vscode" | "cursor" | string;
 	useRangeHandler?: boolean;
+	useWebview?: boolean;
+	webviewUrl?: string;
+	webviewTitle?: string;
 };
 
 const VSCODE_URI_HANDLER_ID =
 	"m2tech-solutions.frame-master-react-ui-flow-locator-range-handler";
+const FRAME_MASTER_WEBVIEW_MODE_QUERY_KEY = "frameMasterPreview";
+const FRAME_MASTER_WEBVIEW_MODE_QUERY_VALUE = "vscode";
+const FRAME_MASTER_WEBVIEW_MESSAGE_TYPE = "frame-master-open-locator-uri";
 
 type LocatorRuntimeConfig = {
 	adapter?: AdapterId;
@@ -61,23 +67,61 @@ function getDefaultVSCodeTargetUrl(config: UIFlowPluginConfig) {
 	return `vscode://file/${projectPath}${filePath}:${line}:${column}`;
 }
 
+function getVSCodeExtensionTargetUrl(
+	path: "/open" | "/webview",
+	config: UIFlowPluginConfig,
+) {
+	const projectPath = "$" + "{projectPath}";
+	const filePath = "$" + "{filePath}";
+	const line = "$" + "{line}";
+	const column = "$" + "{column}";
+	const queryParams = [`env=${config.env}`];
+
+	if (path === "/webview") {
+		if (config.webviewUrl) {
+			queryParams.push(`previewUrl=${encodeURIComponent(config.webviewUrl)}`);
+		}
+
+		if (config.webviewTitle) {
+			queryParams.push(
+				`previewTitle=${encodeURIComponent(config.webviewTitle)}`,
+			);
+		}
+	}
+
+	if (config.env === "wsl") {
+		const distro = encodeURIComponent(getWslDistroName());
+		queryParams.push(`distro=${distro}`);
+		return `vscode://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
+	}
+
+	return `vscode://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
+}
+
+function getTargetLabel(config: UIFlowPluginConfig) {
+	if (config.editor === "vscode" && config.useWebview) {
+		return "VS Code Webview";
+	}
+
+	return getEditorLabel(config.editor);
+}
+
 function getLocatorTargetUrl(config: UIFlowPluginConfig) {
 	const projectPath = "$" + "{projectPath}";
 	const filePath = "$" + "{filePath}";
 	const line = "$" + "{line}";
 	const column = "$" + "{column}";
 
+	if (config.editor === "vscode" && config.useWebview) {
+		return getVSCodeExtensionTargetUrl("/webview", config);
+	}
+
 	if (config.editor === "vscode" && !config.useRangeHandler) {
 		return getDefaultVSCodeTargetUrl(config);
 	}
 
-	if (config.env === "wsl" && config.editor === "vscode") {
-		const distro = encodeURIComponent(getWslDistroName());
-		return `vscode://${VSCODE_URI_HANDLER_ID}/open?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&env=wsl&distro=${distro}`;
-	}
-
 	if (config.editor === "vscode") {
-		return `vscode://${VSCODE_URI_HANDLER_ID}/open?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&env=${config.env}`;
+		return getVSCodeExtensionTargetUrl("/open", config);
 	}
 
 	return `${getEditorScheme(config.editor)}://file/${projectPath}${filePath}:${line}:${column}`;
@@ -89,7 +133,7 @@ function getLocatorRuntimeConfig(
 	return {
 		targets: {
 			[config.editor]: {
-				label: getEditorLabel(config.editor),
+				label: getTargetLabel(config),
 				url: getLocatorTargetUrl(config),
 			},
 		},
@@ -122,6 +166,12 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 	const locatorConfig = serializeForInlineScript(
 		getLocatorRuntimeConfig(config),
 	);
+	const webviewBridgeConfig = serializeForInlineScript({
+		extensionId: VSCODE_URI_HANDLER_ID,
+		messageType: FRAME_MASTER_WEBVIEW_MESSAGE_TYPE,
+		previewModeQueryKey: FRAME_MASTER_WEBVIEW_MODE_QUERY_KEY,
+		previewModeQueryValue: FRAME_MASTER_WEBVIEW_MODE_QUERY_VALUE,
+	});
 
 	return {
 		name: "react-ui-flow-dev",
@@ -132,7 +182,98 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 				files: {
 					"/@frame-master-plugin-react-ui-flow-react.js": `
                     import setup from "@locator/runtime";
-                    export default () => setup(${locatorConfig});
+
+					const locatorConfig = ${locatorConfig};
+					const webviewBridgeConfig = ${webviewBridgeConfig};
+
+					function isVSCodePreviewMode() {
+						const search = typeof window === "undefined" ? "" : window.location.search;
+						const params = new URLSearchParams(search);
+						return params.get(webviewBridgeConfig.previewModeQueryKey) === webviewBridgeConfig.previewModeQueryValue;
+					}
+
+					function getBridgeHref(value) {
+						if (typeof value !== "string") {
+							return null;
+						}
+
+						return value.startsWith("vscode://" + webviewBridgeConfig.extensionId + "/") ? value : null;
+					}
+
+					function postLocatorHref(href) {
+						if (typeof window === "undefined" || window.parent === window) {
+							return;
+						}
+
+						window.parent.postMessage(
+							{
+								type: webviewBridgeConfig.messageType,
+								href,
+							},
+							"*",
+						);
+					}
+
+					function installVSCodeWebviewBridge() {
+						if (
+							typeof window === "undefined" ||
+							typeof document === "undefined" ||
+							window.parent === window ||
+							!isVSCodePreviewMode() ||
+							window.__FRAME_MASTER_UI_FLOW_BRIDGE_INSTALLED__
+						) {
+							return;
+						}
+
+						window.__FRAME_MASTER_UI_FLOW_BRIDGE_INSTALLED__ = true;
+
+						const originalOpen = typeof window.open === "function"
+							? window.open.bind(window)
+							: null;
+
+						window.open = function patchedOpen(url, target, features) {
+							const href = getBridgeHref(
+								typeof url === "string" ? url : url?.toString?.(),
+							);
+
+							if (href) {
+								postLocatorHref(href);
+								return null;
+							}
+
+							return originalOpen ? originalOpen(url, target, features) : null;
+						};
+
+						document.addEventListener(
+							"click",
+							(event) => {
+								const target = event.target instanceof Element
+									? event.target.closest("a[href]")
+									: null;
+
+								if (!target) {
+									return;
+								}
+
+								const href = getBridgeHref(target.href);
+
+								if (!href) {
+									return;
+								}
+
+								event.preventDefault();
+								event.stopPropagation();
+								event.stopImmediatePropagation?.();
+								postLocatorHref(href);
+							},
+							true,
+						);
+					}
+
+					export default () => {
+						installVSCodeWebviewBridge();
+						return setup(locatorConfig);
+					};
                     `,
 				},
 				plugins: [
