@@ -20,6 +20,8 @@ When the plugin is configured with `useWebview: true` and a `webviewUrl`, the ex
 - Inside preview mode, the plugin patches LocatorJS VS Code links so they post messages to the parent panel instead of trying to navigate the iframe.
 - The extension receives those messages and opens the matching source range in VS Code.
 
+On VS Code startup, the extension also scans workspace `frame-master.config.ts|mts|js|mjs` files. If it finds `UIFlowPlugin({ editor: "vscode", useWebview: true, webviewUrl: ... })`, it polls that preview URL and auto-opens the panel when the dev server becomes reachable, even before you click a Locator target.
+
 ## Local Packaging
 
 Build a locally installable VSIX with:

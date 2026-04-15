@@ -148,6 +148,56 @@ suite("Locator Range Handler", () => {
 			state.previewSourceUrl,
 			/http:\/\/127\.0\.0\.1:3000\/app\?frameMasterPreview=vscode/,
 		);
+		assert.strictEqual(
+			state.request?.fullPath,
+			"/workspace/certorify/src/App.tsx",
+		);
+	});
+
+	test("creates startup preview panel state without a current source", () => {
+		const state = __testHooks.createLocatorPanelState(
+			"http://127.0.0.1:3000/app",
+			"Startup Preview",
+		);
+
+		assert.strictEqual(state.request, undefined);
+		assert.strictEqual(state.previewTitle, "Startup Preview");
+		assert.strictEqual(state.previewOrigin, "http://127.0.0.1:3000");
+		assert.match(
+			state.previewSourceUrl,
+			/http:\/\/127\.0\.0\.1:3000\/app\?frameMasterPreview=vscode/,
+		);
+	});
+
+	test("extracts auto-open preview config from frame master source", () => {
+		const configs = __testHooks.parseAutoOpenPreviewConfigs(`
+			const plugins = [
+				UIFlowPlugin({
+					env: "wsl",
+					editor: "vscode",
+					useWebview: true,
+					webviewUrl: "http://localhost:3001",
+					webviewTitle: "Certorify Preview",
+				}),
+			];
+		`);
+
+		assert.deepStrictEqual(configs, [
+			{
+				previewUrl: "http://localhost:3001",
+				previewTitle: "Certorify Preview",
+				configPath: "",
+			},
+		]);
+	});
+
+	test("treats reachable preview responses as auto-open candidates", () => {
+		assert.strictEqual(__testHooks.shouldAutoOpenForPreviewResponse(200), true);
+		assert.strictEqual(__testHooks.shouldAutoOpenForPreviewResponse(404), true);
+		assert.strictEqual(
+			__testHooks.shouldAutoOpenForPreviewResponse(503),
+			false,
+		);
 	});
 
 	test("accepts locator uri relay messages", () => {
@@ -182,5 +232,20 @@ suite("Locator Range Handler", () => {
 		assert.match(html, /iframe id="preview-frame"/);
 		assert.match(html, /frameMasterPreview=vscode/);
 		assert.match(html, /\/workspace\/certorify\/src\/App\.tsx/);
+	});
+
+	test("renders startup webview html without source action", () => {
+		const html = __testHooks.getWebviewHtml(
+			__testHooks.createLocatorPanelState(
+				"http://127.0.0.1:3000/app",
+				"Startup Preview",
+				undefined,
+				"/workspace/certorify/frame-master.config.ts",
+			),
+		);
+
+		assert.match(html, /No source selected yet|frame-master\.config\.ts/);
+		assert.match(html, /Awaiting LocatorJS selection/);
+		assert.match(html, /disabled aria-disabled="true"/);
 	});
 });

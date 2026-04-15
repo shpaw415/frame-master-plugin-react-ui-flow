@@ -104,6 +104,8 @@ Optional string.
 
 Use a URL that the local VS Code UI host can reach. For local development that is typically something like `http://127.0.0.1:3000`.
 
+When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code startup and auto-open the preview panel when the dev server becomes reachable.
+
 ### `webviewTitle`
 
 Optional string.
@@ -181,7 +183,7 @@ UIFlowPlugin({
 
 During transformation, the plugin records the JSX opening location and source file path on each element. LocatorJS uses those attributes in the browser to open the corresponding file and position in the editor.
 
-When the optional VS Code handler extension is installed, the URI target can either open the file directly or load a VS Code preview panel. In preview mode, the plugin also installs a browser-side bridge that intercepts LocatorJS VS Code links inside the iframe and relays them back to the parent webview so the extension can still open and expand the matching JSX node.
+When the optional VS Code handler extension is installed, the URI target can either open the file directly or load a VS Code preview panel. In preview mode, the plugin also installs a browser-side bridge that intercepts LocatorJS VS Code links inside the iframe and relays them back to the parent webview so the extension can still open and expand the matching JSX node. If your workspace config contains `useWebview: true` and a `webviewUrl`, the extension can also wait for that preview URL to come up and open the panel automatically when the dev server becomes reachable.
 
 ## License
 

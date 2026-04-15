@@ -3,6 +3,8 @@
 
 import * as parser from "@babel/parser";
 import * as traverseModule from "@babel/traverse";
+import { isExpression } from "@babel/types";
+import type { Expression, ObjectExpression } from "@babel/types";
 import * as vscode from "vscode";
 
 const traverse =
@@ -52,11 +54,18 @@ type LocatorUriMessage = {
 };
 
 type LocatorPanelState = {
-	request: LocatorRequest;
+	request?: LocatorRequest;
 	previewUrl: string;
 	previewTitle: string;
 	previewOrigin: string;
 	previewSourceUrl: string;
+	configPath?: string;
+};
+
+type AutoOpenPreviewConfig = {
+	previewUrl: string;
+	previewTitle: string;
+	configPath: string;
 };
 
 const WEBVIEW_PANEL_VIEW_TYPE =
@@ -67,8 +76,18 @@ const PREVIEW_TITLE_QUERY_KEY = "previewTitle";
 const PREVIEW_MODE_QUERY_KEY = "frameMasterPreview";
 const PREVIEW_MODE_QUERY_VALUE = "vscode";
 const PREVIEW_BRIDGE_MESSAGE_TYPE = "frame-master-open-locator-uri";
+const PREVIEW_AUTO_OPEN_POLL_INTERVAL_MS = 1000;
+const PREVIEW_AUTO_OPEN_TIMEOUT_MS = 5 * 60 * 1000;
+const PREVIEW_REACHABILITY_TIMEOUT_MS = 1500;
+const FRAME_MASTER_CONFIG_FILE_NAMES = [
+	"frame-master.config.ts",
+	"frame-master.config.mts",
+	"frame-master.config.js",
+	"frame-master.config.mjs",
+];
 
 let locatorWebviewPanel: vscode.WebviewPanel | undefined;
+let didHandleLocatorUri = false;
 
 function normalizePosixPath(filePath: string) {
 	return filePath.replace(/\\/g, "/");
@@ -147,12 +166,12 @@ function appendQueryValue(url: string, key: string, value: string) {
 	return parsedUrl.toString();
 }
 
-function parseLocatorPanelState(uri: vscode.Uri): LocatorPanelState {
-	const params = new URLSearchParams(uri.query);
-	const previewUrl = getQueryValue(params, PREVIEW_URL_QUERY_KEY);
-	const previewTitle = getQueryValue(params, PREVIEW_TITLE_QUERY_KEY);
-	const request = parseLocatorRequest(uri);
-
+function createLocatorPanelState(
+	previewUrl: string,
+	previewTitle: string,
+	request?: LocatorRequest,
+	configPath?: string,
+): LocatorPanelState {
 	if (!previewUrl) {
 		return {
 			request,
@@ -160,6 +179,7 @@ function parseLocatorPanelState(uri: vscode.Uri): LocatorPanelState {
 			previewTitle: previewTitle || WEBVIEW_PANEL_TITLE,
 			previewOrigin: "",
 			previewSourceUrl: "",
+			configPath,
 		};
 	}
 
@@ -168,15 +188,217 @@ function parseLocatorPanelState(uri: vscode.Uri): LocatorPanelState {
 		PREVIEW_MODE_QUERY_KEY,
 		PREVIEW_MODE_QUERY_VALUE,
 	);
-	const previewOrigin = new URL(previewSourceUrl).origin;
 
 	return {
 		request,
 		previewUrl,
 		previewTitle: previewTitle || WEBVIEW_PANEL_TITLE,
-		previewOrigin,
+		previewOrigin: new URL(previewSourceUrl).origin,
 		previewSourceUrl,
+		configPath,
 	};
+}
+
+function parseLocatorPanelState(uri: vscode.Uri): LocatorPanelState {
+	const params = new URLSearchParams(uri.query);
+	const previewUrl = getQueryValue(params, PREVIEW_URL_QUERY_KEY);
+	const previewTitle = getQueryValue(params, PREVIEW_TITLE_QUERY_KEY);
+	const request = parseLocatorRequest(uri);
+
+	return createLocatorPanelState(previewUrl, previewTitle, request);
+}
+
+function unwrapExpression(expression: Expression): Expression {
+	if (expression.type === "TSAsExpression") {
+		return unwrapExpression(expression.expression);
+	}
+
+	if (expression.type === "TSSatisfiesExpression") {
+		return unwrapExpression(expression.expression);
+	}
+
+	if (expression.type === "TypeCastExpression") {
+		return unwrapExpression(expression.expression);
+	}
+
+	if (expression.type === "ParenthesizedExpression") {
+		return unwrapExpression(expression.expression);
+	}
+
+	return expression;
+}
+
+function getObjectPropertyExpression(
+	objectExpression: ObjectExpression,
+	propertyName: string,
+) {
+	for (const property of objectExpression.properties) {
+		if (property.type !== "ObjectProperty" || property.computed) {
+			continue;
+		}
+
+		const keyName =
+			property.key.type === "Identifier"
+				? property.key.name
+				: property.key.type === "StringLiteral"
+					? property.key.value
+					: undefined;
+
+		if (keyName !== propertyName || !isExpression(property.value)) {
+			continue;
+		}
+
+		return unwrapExpression(property.value);
+	}
+
+	return undefined;
+}
+
+function getStaticStringValue(expression: Expression | undefined) {
+	if (!expression) {
+		return undefined;
+	}
+
+	if (expression.type === "StringLiteral") {
+		return expression.value;
+	}
+
+	if (
+		expression.type === "TemplateLiteral" &&
+		expression.expressions.length === 0
+	) {
+		return expression.quasis.map((quasi) => quasi.value.cooked || "").join("");
+	}
+
+	return undefined;
+}
+
+function getStaticBooleanValue(expression: Expression | undefined) {
+	if (!expression) {
+		return undefined;
+	}
+
+	return expression.type === "BooleanLiteral" ? expression.value : undefined;
+}
+
+function parseAutoOpenPreviewConfigs(
+	sourceText: string,
+): AutoOpenPreviewConfig[] {
+	try {
+		const ast = parser.parse(sourceText, {
+			sourceType: "module",
+			plugins: [
+				"jsx",
+				"typescript",
+				"classProperties",
+				"decorators-legacy",
+				"importAttributes",
+			],
+			errorRecovery: true,
+		});
+
+		const configs: AutoOpenPreviewConfig[] = [];
+
+		traverse(ast, {
+			CallExpression(path) {
+				if (
+					path.node.callee.type !== "Identifier" ||
+					path.node.callee.name !== "UIFlowPlugin"
+				) {
+					return;
+				}
+
+				const [configArgument] = path.node.arguments;
+
+				if (!configArgument || configArgument.type !== "ObjectExpression") {
+					return;
+				}
+
+				const editor = getStaticStringValue(
+					getObjectPropertyExpression(configArgument, "editor"),
+				);
+				const useWebview = getStaticBooleanValue(
+					getObjectPropertyExpression(configArgument, "useWebview"),
+				);
+				const previewUrl = getStaticStringValue(
+					getObjectPropertyExpression(configArgument, "webviewUrl"),
+				);
+				const previewTitle =
+					getStaticStringValue(
+						getObjectPropertyExpression(configArgument, "webviewTitle"),
+					) || WEBVIEW_PANEL_TITLE;
+
+				if (editor !== "vscode" || useWebview !== true || !previewUrl) {
+					return;
+				}
+
+				configs.push({
+					previewUrl,
+					previewTitle,
+					configPath: "",
+				});
+			},
+		});
+
+		return configs;
+	} catch {
+		return [];
+	}
+}
+
+async function readTextFile(uri: vscode.Uri) {
+	const bytes = await vscode.workspace.fs.readFile(uri);
+	return new TextDecoder().decode(bytes);
+}
+
+function shouldAutoOpenForPreviewResponse(status: number) {
+	return status >= 200 && status < 500;
+}
+
+async function isPreviewUrlReachable(url: string) {
+	const abortController = new AbortController();
+	const timeoutHandle = globalThis.setTimeout(() => {
+		abortController.abort();
+	}, PREVIEW_REACHABILITY_TIMEOUT_MS);
+
+	try {
+		const response = await fetch(url, {
+			method: "GET",
+			redirect: "follow",
+			signal: abortController.signal,
+		});
+		return shouldAutoOpenForPreviewResponse(response.status);
+	} catch {
+		return false;
+	} finally {
+		globalThis.clearTimeout(timeoutHandle);
+	}
+}
+
+async function findAutoOpenPreviewConfig() {
+	for (const workspaceFolder of vscode.workspace.workspaceFolders || []) {
+		for (const fileName of FRAME_MASTER_CONFIG_FILE_NAMES) {
+			const configUri = vscode.Uri.joinPath(workspaceFolder.uri, fileName);
+
+			try {
+				const sourceText = await readTextFile(configUri);
+				const [config] = parseAutoOpenPreviewConfigs(sourceText);
+
+				if (!config) {
+					continue;
+				}
+
+				return {
+					...config,
+					configPath: configUri.fsPath,
+				};
+			} catch {
+				continue;
+			}
+		}
+	}
+
+	return undefined;
 }
 
 function getSelectionRange(
@@ -338,13 +560,17 @@ async function openLocatorRequest(request: LocatorRequest) {
 }
 
 function getWebviewHtml(state: LocatorPanelState) {
-	const requestJson = JSON.stringify(state.request)
+	const requestJson = JSON.stringify(state.request ?? null)
 		.replace(/</g, "\\u003c")
 		.replace(/>/g, "\\u003e");
 	const previewTitle = escapeHtml(state.previewTitle || WEBVIEW_PANEL_TITLE);
-	const pathLabel = escapeHtml(state.request.fullPath);
-	const envLabel = escapeHtml(state.request.env || "local");
-	const locationLabel = `${state.request.startLine}:${state.request.startColumnOneBased}`;
+	const pathLabel = escapeHtml(
+		state.request?.fullPath || state.configPath || "No source selected yet",
+	);
+	const envLabel = escapeHtml(state.request?.env || "preview");
+	const locationLabel = state.request
+		? `${state.request.startLine}:${state.request.startColumnOneBased}`
+		: "Awaiting LocatorJS selection";
 	const previewSourceUrl = state.previewSourceUrl
 		? escapeHtml(state.previewSourceUrl)
 		: "";
@@ -352,6 +578,12 @@ function getWebviewHtml(state: LocatorPanelState) {
 		.replace(/</g, "\\u003c")
 		.replace(/>/g, "\\u003e");
 	const bridgeMessageTypeJson = JSON.stringify(PREVIEW_BRIDGE_MESSAGE_TYPE);
+	const sourceButtonAttributes = state.request
+		? ""
+		: ' disabled aria-disabled="true"';
+	const introCopy = state.request
+		? "The preview runs inside VS Code. LocatorJS clicks from the embedded app are bridged back into the extension so source navigation stays inside the editor."
+		: "The preview is live inside VS Code. Use LocatorJS inside the iframe and choose the VS Code target to sync the current source location into this panel.";
 	const iframeMarkup = state.previewSourceUrl
 		? `<iframe id="preview-frame" src="${previewSourceUrl}" title="${previewTitle}"></iframe>`
 		: `<section class="empty-state"><p>No preview URL was configured for this webview target.</p><p>Add <code>webviewUrl</code> to the plugin config to load your local app inside VS Code.</p></section>`;
@@ -478,6 +710,11 @@ function getWebviewHtml(state: LocatorPanelState) {
 		background: transparent;
 		border-color: color-mix(in srgb, var(--panel-border) 68%, transparent 32%);
 	}
+	button:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+		transform: none;
+	}
 	p {
 		margin: 0;
 		line-height: 1.5;
@@ -540,7 +777,7 @@ function getWebviewHtml(state: LocatorPanelState) {
 			<div class="header-copy">
 				<div class="kicker">Frame Master Preview</div>
 				<h1>${previewTitle}</h1>
-				<p>The preview runs inside VS Code. LocatorJS clicks from the embedded app are bridged back into the extension so source navigation stays inside the editor.</p>
+				<p>${introCopy}</p>
 			</div>
 			<section class="card">
 				<dl>
@@ -553,7 +790,7 @@ function getWebviewHtml(state: LocatorPanelState) {
 				</dl>
 			</section>
 			<div class="actions">
-				<button id="open-source" type="button">Open Current Source</button>
+				<button id="open-source" type="button"${sourceButtonAttributes}>Open Current Source</button>
 				<button class="secondary" id="reload-preview" type="button">Reload Preview</button>
 			</div>
 		</aside>
@@ -578,7 +815,9 @@ function getWebviewHtml(state: LocatorPanelState) {
 	const bridgeMessageType = ${bridgeMessageTypeJson};
 	const previewFrame = document.getElementById("preview-frame");
 	document.getElementById("open-source")?.addEventListener("click", () => {
-		vscode.postMessage({ type: "open-locator", request });
+		if (request) {
+			vscode.postMessage({ type: "open-locator", request });
+		}
 	});
 	document.getElementById("reload-preview")?.addEventListener("click", () => {
 		if (previewFrame instanceof HTMLIFrameElement && previewFrame.src) {
@@ -612,9 +851,10 @@ async function openLocatorRange(uri: vscode.Uri) {
 	await openLocatorRequest(request);
 }
 
-function openLocatorWebview(context: vscode.ExtensionContext, uri: vscode.Uri) {
-	const state = parseLocatorPanelState(uri);
-
+function showLocatorWebviewPanel(
+	context: vscode.ExtensionContext,
+	state: LocatorPanelState,
+) {
 	if (!locatorWebviewPanel) {
 		locatorWebviewPanel = vscode.window.createWebviewPanel(
 			WEBVIEW_PANEL_VIEW_TYPE,
@@ -657,9 +897,81 @@ function openLocatorWebview(context: vscode.ExtensionContext, uri: vscode.Uri) {
 		);
 	}
 
-	locatorWebviewPanel.title = `${state.previewTitle}: ${state.request.startLine}:${state.request.startColumnOneBased}`;
+	locatorWebviewPanel.title = state.request
+		? `${state.previewTitle}: ${state.request.startLine}:${state.request.startColumnOneBased}`
+		: state.previewTitle;
 	locatorWebviewPanel.webview.html = getWebviewHtml(state);
 	locatorWebviewPanel.reveal(vscode.ViewColumn.Beside, true);
+}
+
+function openLocatorWebview(context: vscode.ExtensionContext, uri: vscode.Uri) {
+	showLocatorWebviewPanel(context, parseLocatorPanelState(uri));
+}
+
+async function autoOpenConfiguredPreview(context: vscode.ExtensionContext) {
+	const config = await findAutoOpenPreviewConfig();
+
+	if (!config) {
+		return;
+	}
+
+	let inFlight = false;
+	const startedAt = Date.now();
+	let disposed = false;
+
+	const stopWatching = () => {
+		disposed = true;
+		globalThis.clearInterval(intervalHandle);
+	};
+
+	const tick = async () => {
+		if (disposed || inFlight) {
+			return;
+		}
+
+		if (didHandleLocatorUri || locatorWebviewPanel) {
+			stopWatching();
+			return;
+		}
+
+		if (Date.now() - startedAt > PREVIEW_AUTO_OPEN_TIMEOUT_MS) {
+			stopWatching();
+			return;
+		}
+
+		inFlight = true;
+
+		try {
+			const reachable = await isPreviewUrlReachable(config.previewUrl);
+
+			if (!reachable) {
+				return;
+			}
+
+			showLocatorWebviewPanel(
+				context,
+				createLocatorPanelState(
+					config.previewUrl,
+					config.previewTitle,
+					undefined,
+					config.configPath,
+				),
+			);
+			stopWatching();
+		} finally {
+			inFlight = false;
+		}
+	};
+
+	const intervalHandle = globalThis.setInterval(() => {
+		void tick();
+	}, PREVIEW_AUTO_OPEN_POLL_INTERVAL_MS);
+
+	context.subscriptions.push({
+		dispose: stopWatching,
+	});
+
+	void tick();
 }
 
 export const __testHooks = {
@@ -667,6 +979,10 @@ export const __testHooks = {
 	getDocumentTarget,
 	parseLocatorRequest,
 	parseLocatorPanelState,
+	parseAutoOpenPreviewConfigs,
+	createLocatorPanelState,
+	findAutoOpenPreviewConfig,
+	shouldAutoOpenForPreviewResponse,
 	appendQueryValue,
 	getSelectionRange,
 	toEditorRange,
@@ -680,6 +996,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
 			handleUri(uri: vscode.Uri) {
+				didHandleLocatorUri = true;
+
 				const action =
 					uri.path === "/open"
 						? openLocatorRange(uri)
@@ -699,6 +1017,10 @@ export function activate(context: vscode.ExtensionContext) {
 			},
 		}),
 	);
+
+	globalThis.setTimeout(() => {
+		void autoOpenConfiguredPreview(context);
+	}, 250);
 }
 
 export function deactivate() {}
