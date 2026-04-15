@@ -1,5 +1,5 @@
 {
-	"name": "frame-master-react-ui-flow",
+	"name": "frame-master-plugin-react-ui-flow",
 	"version": "0.1.0",
 	"type": "module",
 	"main": "index.ts",
