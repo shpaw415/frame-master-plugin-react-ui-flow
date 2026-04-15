@@ -1,4 +1,4 @@
-# frame-master-react-ui-flow
+# frame-master-plugin-react-ui-flow
 
 React UI flow plugin for Frame-Master.
 
@@ -10,16 +10,26 @@ This plugin wires LocatorJS into a Frame-Master React app so you can inspect ren
 - Serves a small client bootstrap that starts the LocatorJS runtime in the browser.
 - Generates editor links for local file targets and WSL remote targets.
 - Optionally integrates with the companion VS Code URI handler extension to select the full JSX element instead of only moving the cursor.
+- Can open a live VS Code webview preview with back, forward, reload, and manual route navigation controls.
+- Keeps the preview route field in sync with in-app navigation inside the iframe.
+- Reuses an already open editor tab when LocatorJS jumps to a file, or opens the file in a separate editor group instead of replacing the preview.
 
 ## Installation
 
 Install the plugin in your Frame-Master project:
 
 ```bash
-bun add frame-master-react-ui-flow
+bun add frame-master-plugin-react-ui-flow
 ```
 
 `frame-master` is a peer dependency and must already be installed in the host project.
+
+## Quick Start
+
+See the ready-to-copy examples in:
+
+- `QUICK_EXEMPLE.md`
+- `CONFIG_EXEMPLE.md`
 
 ## Server-side usage
 
@@ -27,7 +37,7 @@ Register the plugin in your Frame-Master config and provide the target environme
 
 ```ts
 import type { FrameMasterConfig } from "frame-master/server/types";
-import UIFlowPlugin from "frame-master-react-ui-flow";
+import UIFlowPlugin from "frame-master-plugin-react-ui-flow";
 
 const config: FrameMasterConfig = {
   HTTPServer: { port: 3000 },
@@ -49,7 +59,7 @@ The plugin also exports `setupUIFlow()`. Call it once on the client after your a
 
 ```tsx
 import { useEffect } from "react";
-import { setupUIFlow } from "frame-master-react-ui-flow";
+import { setupUIFlow } from "frame-master-plugin-react-ui-flow";
 
 export function ClientWrapper({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -106,7 +116,7 @@ Use a URL that the local VS Code UI host can reach. For local development that i
 
 When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code startup and auto-open the preview panel when the dev server becomes reachable.
 
-In addition, the plugin now uses its `serverStart.dev_main` hook to write a marker file at `.frame-master/frame-master-react-ui-flow.preview.json` and opens that file with `code -r` in the current VS Code instance. The extension watches for that fake file to open, reads the preview options from its JSON payload, opens the preview webview, and then closes the marker tab. The hook is guarded so it only opens once per preview URL in the current process and only when `VSCODE_IPC_HOOK_CLI` is available.
+In addition, the plugin now exposes an internal preview trigger route and uses its `serverStart.dev_main` hook to ping that route once the dev server is up. The route writes a marker file at `.frame-master/frame-master-react-ui-flow.preview.json` and opens that file with `code -r` in the current VS Code instance. The extension watches for that fake file to open, reads the preview options from its JSON payload, opens the preview webview, and then closes the marker tab. The hook is guarded so it only opens once per preview URL in the current process and only when `VSCODE_IPC_HOOK_CLI` is available.
 
 ### `webviewTitle`
 
@@ -137,6 +147,17 @@ code --install-extension frame-master-react-ui-flow-locator-range-handler.vsix -
 ```
 
 If you are working with WSL, install the extension into the local desktop VS Code UI host, not only the remote WSL extension host.
+
+## VS Code Webview Features
+
+When `useWebview: true` is enabled and the companion extension is installed, the preview panel supports:
+
+- automatic preview opening when the dev server becomes reachable
+- startup and dev-hook preview opening in the current VS Code instance
+- a top route bar for manually navigating to `/dashboard`, `/login`, or any full URL
+- route syncing from the iframe back into the route bar when your app navigates internally
+- back, forward, and reload controls in the webview title bar
+- file opens that stay out of the preview group and reuse an already open editor tab when possible
 
 ## Example setups
 
@@ -186,6 +207,8 @@ UIFlowPlugin({
 During transformation, the plugin records the JSX opening location and source file path on each element. LocatorJS uses those attributes in the browser to open the corresponding file and position in the editor.
 
 When the optional VS Code handler extension is installed, the URI target can either open the file directly or load a VS Code preview panel. In preview mode, the plugin also installs a browser-side bridge that intercepts LocatorJS VS Code links inside the iframe and relays them back to the parent webview so the extension can still open and expand the matching JSX node. If your workspace config contains `useWebview: true` and a `webviewUrl`, the extension can also wait for that preview URL to come up and open the panel automatically when the dev server becomes reachable.
+
+That preview bridge also reports iframe location changes back to the parent webview, so the route bar stays in sync after client-side navigation.
 
 ## License
 
