@@ -62,6 +62,15 @@ function getEditorScheme(editor: string) {
 	return editor.toLowerCase();
 }
 
+function isExtensionHostEditor(editor: string) {
+	const normalizedEditor = editor.toLowerCase();
+	return normalizedEditor === "vscode" || normalizedEditor === "cursor";
+}
+
+function getEditorCliCommand(editor: string) {
+	return editor.toLowerCase() === "cursor" ? "cursor" : "code";
+}
+
 function getWslDistroName() {
 	return process.env.WSL_DISTRO_NAME || "Ubuntu";
 }
@@ -84,6 +93,7 @@ function getVSCodeExtensionTargetUrl(
 	path: "/open" | "/webview",
 	config: UIFlowPluginConfig,
 ) {
+	const editorScheme = getEditorScheme(config.editor);
 	const projectPath = "$" + "{projectPath}";
 	const filePath = "$" + "{filePath}";
 	const line = "$" + "{line}";
@@ -105,13 +115,14 @@ function getVSCodeExtensionTargetUrl(
 	if (config.env === "wsl") {
 		const distro = encodeURIComponent(getWslDistroName());
 		queryParams.push(`distro=${distro}`);
-		return `vscode://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
+		return `${editorScheme}://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
 	}
 
-	return `vscode://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
+	return `${editorScheme}://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
 }
 
 function getVSCodePreviewOpenUrl(config: UIFlowPluginConfig) {
+	const editorScheme = getEditorScheme(config.editor);
 	const queryParams: string[] = [];
 
 	if (config.webviewUrl) {
@@ -122,7 +133,7 @@ function getVSCodePreviewOpenUrl(config: UIFlowPluginConfig) {
 		queryParams.push(`previewTitle=${encodeURIComponent(config.webviewTitle)}`);
 	}
 
-	return `vscode://${VSCODE_URI_HANDLER_ID}/preview?${queryParams.join("&")}`;
+	return `${editorScheme}://${VSCODE_URI_HANDLER_ID}/preview?${queryParams.join("&")}`;
 }
 
 function getPreviewOpenMarkerPath() {
@@ -156,7 +167,7 @@ async function writePreviewOpenMarker(config: UIFlowPluginConfig) {
 
 function shouldTriggerPreviewOpen(config: UIFlowPluginConfig) {
 	return (
-		config.editor === "vscode" &&
+		isExtensionHostEditor(config.editor) &&
 		config.useWebview === true &&
 		typeof config.webviewUrl === "string" &&
 		config.webviewUrl.length > 0
@@ -210,7 +221,7 @@ async function openPreviewFromDevHook(config: UIFlowPluginConfig) {
 	const markerPath = await writePreviewOpenMarker(config);
 
 	const result = Bun.spawn({
-		cmd: ["code", "-r", markerPath],
+		cmd: [getEditorCliCommand(config.editor), "-r", markerPath],
 		env: currentVSCodeCliEnv,
 	});
 
@@ -228,8 +239,8 @@ async function openPreviewFromDevHook(config: UIFlowPluginConfig) {
 }
 
 function getTargetLabel(config: UIFlowPluginConfig) {
-	if (config.editor === "vscode" && config.useWebview) {
-		return "VS Code Webview";
+	if (isExtensionHostEditor(config.editor) && config.useWebview) {
+		return `${getEditorLabel(config.editor)} Webview`;
 	}
 
 	return getEditorLabel(config.editor);
@@ -241,7 +252,7 @@ function getLocatorTargetUrl(config: UIFlowPluginConfig) {
 	const line = "$" + "{line}";
 	const column = "$" + "{column}";
 
-	if (config.editor === "vscode" && config.useWebview) {
+	if (isExtensionHostEditor(config.editor) && config.useWebview) {
 		return getVSCodeExtensionTargetUrl("/webview", config);
 	}
 
@@ -296,6 +307,7 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 		getLocatorRuntimeConfig(config),
 	);
 	const webviewBridgeConfig = serializeForInlineScript({
+		extensionScheme: getEditorScheme(config.editor),
 		extensionId: VSCODE_URI_HANDLER_ID,
 		messageType: FRAME_MASTER_WEBVIEW_MESSAGE_TYPE,
 		locationMessageType: FRAME_MASTER_WEBVIEW_LOCATION_MESSAGE_TYPE,
@@ -330,7 +342,7 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 							return null;
 						}
 
-						return value.startsWith("vscode://" + webviewBridgeConfig.extensionId + "/") ? value : null;
+						return value.startsWith(webviewBridgeConfig.extensionScheme + "://" + webviewBridgeConfig.extensionId + "/") ? value : null;
 					}
 
 					function postLocatorHref(href) {

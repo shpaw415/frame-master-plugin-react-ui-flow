@@ -244,6 +244,28 @@ suite("Locator Range Handler", () => {
 		]);
 	});
 
+	test("extracts auto-open preview config for cursor", () => {
+		const configs = __testHooks.parseAutoOpenPreviewConfigs(`
+			const plugins = [
+				UIFlowPlugin({
+					env: "windows",
+					editor: "cursor",
+					useWebview: true,
+					webviewUrl: "http://localhost:3010",
+					webviewTitle: "Cursor Preview",
+				}),
+			];
+		`);
+
+		assert.deepStrictEqual(configs, [
+			{
+				previewUrl: "http://localhost:3010",
+				previewTitle: "Cursor Preview",
+				configPath: "",
+			},
+		]);
+	});
+
 	test("treats reachable preview responses as auto-open candidates", () => {
 		assert.strictEqual(__testHooks.shouldAutoOpenForPreviewResponse(200), true);
 		assert.strictEqual(__testHooks.shouldAutoOpenForPreviewResponse(404), true);
