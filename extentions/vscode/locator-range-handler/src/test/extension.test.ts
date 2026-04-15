@@ -13,6 +13,16 @@ function createLocatorUri(values: Record<string, string>) {
 	});
 }
 
+function createPreviewUri(values: Record<string, string>) {
+	return vscode.Uri.from({
+		scheme: "vscode",
+		authority:
+			"m2tech-solutions.frame-master-react-ui-flow-locator-range-handler",
+		path: "/preview",
+		query: new URLSearchParams(values).toString(),
+	});
+}
+
 suite("Locator Range Handler", () => {
 	test("parses Linux locator requests", () => {
 		const request = __testHooks.parseLocatorRequest(
@@ -169,6 +179,23 @@ suite("Locator Range Handler", () => {
 		);
 	});
 
+	test("parses preview route without requiring a file target", () => {
+		const state = __testHooks.parsePreviewPanelState(
+			createPreviewUri({
+				previewUrl: "http://127.0.0.1:3000/app",
+				previewTitle: "CLI Preview",
+			}),
+		);
+
+		assert.strictEqual(state.request, undefined);
+		assert.strictEqual(state.previewTitle, "CLI Preview");
+		assert.strictEqual(state.previewOrigin, "http://127.0.0.1:3000");
+		assert.match(
+			state.previewSourceUrl,
+			/http:\/\/127\.0\.0\.1:3000\/app\?frameMasterPreview=vscode/,
+		);
+	});
+
 	test("extracts auto-open preview config from frame master source", () => {
 		const configs = __testHooks.parseAutoOpenPreviewConfigs(`
 			const plugins = [
@@ -224,13 +251,17 @@ suite("Locator Range Handler", () => {
 
 		const html = __testHooks.getWebviewHtml(state);
 
-		assert.match(html, /Open Current Source/);
-		assert.match(html, /Reload Preview/);
 		assert.match(html, /acquireVsCodeApi\(\)/);
-		assert.match(html, /type:\s*"open-locator"/);
 		assert.match(html, /type:\s*"open-locator-uri"/);
 		assert.match(html, /iframe id="preview-frame"/);
+		assert.doesNotMatch(html, /Open Current Source/);
+		assert.doesNotMatch(html, /Reload Preview/);
+		assert.doesNotMatch(html, /Frame Master Preview/);
 		assert.match(html, /frameMasterPreview=vscode/);
+		assert.match(
+			html,
+			/data-source-path="\/workspace\/certorify\/src\/App\.tsx"/,
+		);
 		assert.match(html, /\/workspace\/certorify\/src\/App\.tsx/);
 	});
 
@@ -244,8 +275,12 @@ suite("Locator Range Handler", () => {
 			),
 		);
 
-		assert.match(html, /No source selected yet|frame-master\.config\.ts/);
-		assert.match(html, /Awaiting LocatorJS selection/);
-		assert.match(html, /disabled aria-disabled="true"/);
+		assert.match(html, /iframe id="preview-frame"/);
+		assert.match(
+			html,
+			/data-config-path="\/workspace\/certorify\/frame-master\.config\.ts"/,
+		);
+		assert.doesNotMatch(html, /Open Current Source/);
+		assert.doesNotMatch(html, /Awaiting LocatorJS selection/);
 	});
 });

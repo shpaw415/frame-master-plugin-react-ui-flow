@@ -1,5 +1,6 @@
 import { type PluginObj, type PluginPass, transformSync } from "@babel/core";
 import type { NodePath } from "@babel/traverse";
+import { execFile } from "node:child_process";
 import type {
 	JSXAttribute,
 	JSXOpeningElement,
@@ -23,6 +24,8 @@ const VSCODE_URI_HANDLER_ID =
 const FRAME_MASTER_WEBVIEW_MODE_QUERY_KEY = "frameMasterPreview";
 const FRAME_MASTER_WEBVIEW_MODE_QUERY_VALUE = "vscode";
 const FRAME_MASTER_WEBVIEW_MESSAGE_TYPE = "frame-master-open-locator-uri";
+const FRAME_MASTER_WEBVIEW_PREVIEW_OPENED =
+	"__FRAME_MASTER_UI_FLOW_PREVIEW_OPENED__";
 
 type LocatorRuntimeConfig = {
 	adapter?: AdapterId;
@@ -96,6 +99,68 @@ function getVSCodeExtensionTargetUrl(
 	}
 
 	return `vscode://${VSCODE_URI_HANDLER_ID}${path}?projectPath=${projectPath}&filePath=${filePath}&line=${line}&column=${column}&${queryParams.join("&")}`;
+}
+
+function getVSCodePreviewOpenUrl(config: UIFlowPluginConfig) {
+	const queryParams: string[] = [];
+
+	if (config.webviewUrl) {
+		queryParams.push(`previewUrl=${encodeURIComponent(config.webviewUrl)}`);
+	}
+
+	if (config.webviewTitle) {
+		queryParams.push(`previewTitle=${encodeURIComponent(config.webviewTitle)}`);
+	}
+
+	return `vscode://${VSCODE_URI_HANDLER_ID}/preview?${queryParams.join("&")}`;
+}
+
+function shouldTriggerPreviewOpen(config: UIFlowPluginConfig) {
+	return (
+		config.editor === "vscode" &&
+		config.useWebview === true &&
+		typeof config.webviewUrl === "string" &&
+		config.webviewUrl.length > 0
+	);
+}
+
+function getPreviewOpenRegistry() {
+	const registryKey = FRAME_MASTER_WEBVIEW_PREVIEW_OPENED;
+	const globalState = globalThis as typeof globalThis & {
+		[FRAME_MASTER_WEBVIEW_PREVIEW_OPENED]?: Set<string>;
+	};
+
+	globalState[registryKey] ||= new Set<string>();
+	return globalState[registryKey] as Set<string>;
+}
+
+async function openPreviewFromDevHook(config: UIFlowPluginConfig) {
+	if (!shouldTriggerPreviewOpen(config)) {
+		return;
+	}
+
+	const previewUrl = config.webviewUrl as string;
+	const openedPreviews = getPreviewOpenRegistry();
+
+	if (openedPreviews.has(previewUrl)) {
+		return;
+	}
+
+	const previewOpenUrl = getVSCodePreviewOpenUrl(config);
+
+	await new Promise<void>((resolve) => {
+		execFile("code", ["--open-url", previewOpenUrl], (error) => {
+			if (!error) {
+				openedPreviews.add(previewUrl);
+			} else {
+				console.warn(
+					`[frame-master-react-ui-flow] Failed to open VS Code preview via CLI: ${error.message}`,
+				);
+			}
+
+			resolve();
+		});
+	});
 }
 
 function getTargetLabel(config: UIFlowPluginConfig) {
@@ -398,6 +463,11 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 				],
 			},
 		},
+		serverStart: {
+			async dev_main() {
+				await openPreviewFromDevHook(config);
+			}
+		}
 	};
 }
 

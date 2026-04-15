@@ -106,6 +106,8 @@ Use a URL that the local VS Code UI host can reach. For local development that i
 
 When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code startup and auto-open the preview panel when the dev server becomes reachable.
 
+In addition, the plugin now uses its `serverStart.dev_main` hook to call `code --open-url` with the extension's `/preview` route when the dev server starts. The hook is guarded so it only opens once per preview URL in the current process.
+
 ### `webviewTitle`
 
 Optional string.
