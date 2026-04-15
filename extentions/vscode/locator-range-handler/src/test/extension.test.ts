@@ -196,6 +196,32 @@ suite("Locator Range Handler", () => {
 		);
 	});
 
+	test("detects preview marker documents", () => {
+		const document = {
+			uri: {
+				scheme: "file",
+				fsPath:
+					"/workspace/certorify/.frame-master/frame-master-react-ui-flow.preview.json",
+			},
+		} as vscode.TextDocument;
+
+		assert.strictEqual(__testHooks.isPreviewMarkerDocument(document), true);
+	});
+
+	test("parses preview marker payload", () => {
+		const state = __testHooks.parsePreviewMarkerPayload(
+			JSON.stringify({
+				type: "frame-master-react-ui-flow.preview",
+				previewUrl: "http://127.0.0.1:3000/app",
+				previewTitle: "CLI Marker Preview",
+			}),
+		);
+
+		assert.strictEqual(state?.request, undefined);
+		assert.strictEqual(state?.previewTitle, "CLI Marker Preview");
+		assert.strictEqual(state?.previewOrigin, "http://127.0.0.1:3000");
+	});
+
 	test("extracts auto-open preview config from frame master source", () => {
 		const configs = __testHooks.parseAutoOpenPreviewConfigs(`
 			const plugins = [
@@ -237,6 +263,21 @@ suite("Locator Range Handler", () => {
 		);
 	});
 
+	test("accepts webview control messages", () => {
+		assert.strictEqual(
+			__testHooks.isLocatorWebviewControlMessage({ type: "navigate-back" }),
+			true,
+		);
+		assert.strictEqual(
+			__testHooks.isLocatorWebviewControlMessage({ type: "navigate-forward" }),
+			true,
+		);
+		assert.strictEqual(
+			__testHooks.isLocatorWebviewControlMessage({ type: "reload-preview" }),
+			true,
+		);
+	});
+
 	test("renders webview html with source action", () => {
 		const state = __testHooks.parseLocatorPanelState(
 			createLocatorUri({
@@ -253,7 +294,26 @@ suite("Locator Range Handler", () => {
 
 		assert.match(html, /acquireVsCodeApi\(\)/);
 		assert.match(html, /type:\s*"open-locator-uri"/);
+		assert.match(html, /navigate-back/);
+		assert.match(html, /navigate-forward/);
+		assert.match(html, /reload-preview/);
+		assert.match(html, /id="location-form"/);
+		assert.match(html, /id="location-input"/);
+		assert.match(html, /frame-master-preview-location/);
+		assert.match(
+			html,
+			/contentWindow\?\.postMessage\(\{ type: navigateBackType \}/,
+		);
+		assert.match(
+			html,
+			/contentWindow\?\.postMessage\(\{ type: navigateForwardType \}/,
+		);
 		assert.match(html, /iframe id="preview-frame"/);
+		assert.match(
+			html,
+			/data-src="http:\/\/127\.0\.0\.1:3000\/app\?frameMasterPreview=vscode"/,
+		);
+		assert.match(html, /src="about:blank"/);
 		assert.doesNotMatch(html, /Open Current Source/);
 		assert.doesNotMatch(html, /Reload Preview/);
 		assert.doesNotMatch(html, /Frame Master Preview/);

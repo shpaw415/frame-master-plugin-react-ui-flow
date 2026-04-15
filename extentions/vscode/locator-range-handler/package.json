@@ -16,6 +16,41 @@
 	"categories": [
 		"Other"
 	],
+	"contributes": {
+		"commands": [
+			{
+				"command": "frameMasterReactUiFlowLocatorRangeHandler.previewBack",
+				"title": "Back"
+			},
+			{
+				"command": "frameMasterReactUiFlowLocatorRangeHandler.previewForward",
+				"title": "Forward"
+			},
+			{
+				"command": "frameMasterReactUiFlowLocatorRangeHandler.previewReload",
+				"title": "Reload"
+			}
+		],
+		"menus": {
+			"editor/title": [
+				{
+					"command": "frameMasterReactUiFlowLocatorRangeHandler.previewBack",
+					"when": "activeWebviewPanelId == 'frameMasterReactUiFlowLocatorRangeHandler.preview'",
+					"group": "navigation@1"
+				},
+				{
+					"command": "frameMasterReactUiFlowLocatorRangeHandler.previewForward",
+					"when": "activeWebviewPanelId == 'frameMasterReactUiFlowLocatorRangeHandler.preview'",
+					"group": "navigation@2"
+				},
+				{
+					"command": "frameMasterReactUiFlowLocatorRangeHandler.previewReload",
+					"when": "activeWebviewPanelId == 'frameMasterReactUiFlowLocatorRangeHandler.preview'",
+					"group": "navigation@3"
+				}
+			]
+		}
+	},
 	"activationEvents": [
 		"onUri",
 		"onStartupFinished"

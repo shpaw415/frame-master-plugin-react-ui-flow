@@ -106,7 +106,7 @@ Use a URL that the local VS Code UI host can reach. For local development that i
 
 When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code startup and auto-open the preview panel when the dev server becomes reachable.
 
-In addition, the plugin now uses its `serverStart.dev_main` hook to call `code --open-url` with the extension's `/preview` route when the dev server starts. The hook is guarded so it only opens once per preview URL in the current process.
+In addition, the plugin now uses its `serverStart.dev_main` hook to write a marker file at `.frame-master/frame-master-react-ui-flow.preview.json` and opens that file with `code -r` in the current VS Code instance. The extension watches for that fake file to open, reads the preview options from its JSON payload, opens the preview webview, and then closes the marker tab. The hook is guarded so it only opens once per preview URL in the current process and only when `VSCODE_IPC_HOOK_CLI` is available.
 
 ### `webviewTitle`
 

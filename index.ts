@@ -1,6 +1,7 @@
 import { type PluginObj, type PluginPass, transformSync } from "@babel/core";
 import type { NodePath } from "@babel/traverse";
-import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type {
 	JSXAttribute,
 	JSXOpeningElement,
@@ -24,8 +25,17 @@ const VSCODE_URI_HANDLER_ID =
 const FRAME_MASTER_WEBVIEW_MODE_QUERY_KEY = "frameMasterPreview";
 const FRAME_MASTER_WEBVIEW_MODE_QUERY_VALUE = "vscode";
 const FRAME_MASTER_WEBVIEW_MESSAGE_TYPE = "frame-master-open-locator-uri";
+const FRAME_MASTER_WEBVIEW_LOCATION_MESSAGE_TYPE =
+	"frame-master-preview-location";
+const FRAME_MASTER_WEBVIEW_NAVIGATE_BACK_TYPE = "navigate-back";
+const FRAME_MASTER_WEBVIEW_NAVIGATE_FORWARD_TYPE = "navigate-forward";
+const FRAME_MASTER_WEBVIEW_RELOAD_TYPE = "reload-preview";
 const FRAME_MASTER_WEBVIEW_PREVIEW_OPENED =
 	"__FRAME_MASTER_UI_FLOW_PREVIEW_OPENED__";
+const VSCODE_CLI_IPC_ENV = "VSCODE_IPC_HOOK_CLI";
+const FRAME_MASTER_PREVIEW_MARKER_BASENAME =
+	"frame-master-react-ui-flow.preview.json";
+const FRAME_MASTER_PREVIEW_MARKER_TYPE = "frame-master-react-ui-flow.preview";
 
 type LocatorRuntimeConfig = {
 	adapter?: AdapterId;
@@ -115,6 +125,35 @@ function getVSCodePreviewOpenUrl(config: UIFlowPluginConfig) {
 	return `vscode://${VSCODE_URI_HANDLER_ID}/preview?${queryParams.join("&")}`;
 }
 
+function getPreviewOpenMarkerPath() {
+	return join(
+		process.cwd(),
+		".frame-master",
+		FRAME_MASTER_PREVIEW_MARKER_BASENAME,
+	);
+}
+
+async function writePreviewOpenMarker(config: UIFlowPluginConfig) {
+	const markerPath = getPreviewOpenMarkerPath();
+	mkdirSync(dirname(markerPath), { recursive: true });
+
+	await Bun.write(
+		markerPath,
+		JSON.stringify(
+			{
+				type: FRAME_MASTER_PREVIEW_MARKER_TYPE,
+				previewUrl: config.webviewUrl,
+				previewTitle: config.webviewTitle || "Frame Master UI Flow",
+				createdAt: Date.now(),
+			},
+			null,
+			2,
+		),
+	);
+
+	return markerPath;
+}
+
 function shouldTriggerPreviewOpen(config: UIFlowPluginConfig) {
 	return (
 		config.editor === "vscode" &&
@@ -134,33 +173,58 @@ function getPreviewOpenRegistry() {
 	return globalState[registryKey] as Set<string>;
 }
 
+function getCurrentVSCodeCliEnv() {
+	const ipcHook = process.env[VSCODE_CLI_IPC_ENV];
+
+	if (!ipcHook) {
+		return undefined;
+	}
+
+	return {
+		...process.env,
+		[VSCODE_CLI_IPC_ENV]: ipcHook,
+	};
+}
+
 async function openPreviewFromDevHook(config: UIFlowPluginConfig) {
 	if (!shouldTriggerPreviewOpen(config)) {
 		return;
 	}
 
-	const previewUrl = config.webviewUrl as string;
+	const previewOpenUrl = getVSCodePreviewOpenUrl(config);
 	const openedPreviews = getPreviewOpenRegistry();
 
-	if (openedPreviews.has(previewUrl)) {
+	if (openedPreviews.has(previewOpenUrl)) {
 		return;
 	}
 
-	const previewOpenUrl = getVSCodePreviewOpenUrl(config);
+	const currentVSCodeCliEnv = getCurrentVSCodeCliEnv();
 
-	await new Promise<void>((resolve) => {
-		execFile("code", ["--open-url", previewOpenUrl], (error) => {
-			if (!error) {
-				openedPreviews.add(previewUrl);
-			} else {
-				console.warn(
-					`[frame-master-react-ui-flow] Failed to open VS Code preview via CLI: ${error.message}`,
-				);
-			}
+	if (!currentVSCodeCliEnv) {
+		console.warn(
+			"[frame-master-react-ui-flow] Skipping VS Code preview auto-open because VSCODE_IPC_HOOK_CLI is not available in this process.",
+		);
+		return;
+	}
 
-			resolve();
-		});
+	const markerPath = await writePreviewOpenMarker(config);
+
+	const result = Bun.spawn({
+		cmd: ["code", "-r", markerPath],
+		env: currentVSCodeCliEnv,
 	});
+
+	if (result.exitCode === 0) {
+		openedPreviews.add(previewOpenUrl);
+		return;
+	}
+
+	const stderrText = result.stderr
+		? new TextDecoder().decode(result.stderr).trim()
+		: "";
+	console.warn(
+		`[frame-master-react-ui-flow] Failed to trigger VS Code preview marker open.${stderrText ? ` ${stderrText}` : ""}`,
+	);
 }
 
 function getTargetLabel(config: UIFlowPluginConfig) {
@@ -234,6 +298,10 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 	const webviewBridgeConfig = serializeForInlineScript({
 		extensionId: VSCODE_URI_HANDLER_ID,
 		messageType: FRAME_MASTER_WEBVIEW_MESSAGE_TYPE,
+		locationMessageType: FRAME_MASTER_WEBVIEW_LOCATION_MESSAGE_TYPE,
+		navigateBackType: FRAME_MASTER_WEBVIEW_NAVIGATE_BACK_TYPE,
+		navigateForwardType: FRAME_MASTER_WEBVIEW_NAVIGATE_FORWARD_TYPE,
+		reloadType: FRAME_MASTER_WEBVIEW_RELOAD_TYPE,
 		previewModeQueryKey: FRAME_MASTER_WEBVIEW_MODE_QUERY_KEY,
 		previewModeQueryValue: FRAME_MASTER_WEBVIEW_MODE_QUERY_VALUE,
 	});
@@ -279,6 +347,20 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 						);
 					}
 
+					function postPreviewLocation() {
+						if (typeof window === "undefined" || window.parent === window) {
+							return;
+						}
+
+						window.parent.postMessage(
+							{
+								type: webviewBridgeConfig.locationMessageType,
+								href: window.location.href,
+							},
+							"*",
+						);
+					}
+
 					function installVSCodeWebviewBridge() {
 						if (
 							typeof window === "undefined" ||
@@ -292,9 +374,49 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 
 						window.__FRAME_MASTER_UI_FLOW_BRIDGE_INSTALLED__ = true;
 
+						const originalPushState = window.history.pushState.bind(window.history);
+						const originalReplaceState = window.history.replaceState.bind(window.history);
+
 						const originalOpen = typeof window.open === "function"
 							? window.open.bind(window)
 							: null;
+
+						window.addEventListener("message", (event) => {
+							if (event.source !== window.parent || !event.data || typeof event.data !== "object") {
+								return;
+							}
+
+							if (event.data.type === webviewBridgeConfig.navigateBackType) {
+								window.history.back();
+								return;
+							}
+
+							if (event.data.type === webviewBridgeConfig.navigateForwardType) {
+								window.history.forward();
+								return;
+							}
+
+							if (event.data.type === webviewBridgeConfig.reloadType) {
+								window.location.reload();
+							}
+						});
+
+						window.history.pushState = function patchedPushState(...args) {
+							const result = originalPushState(...args);
+							queueMicrotask(postPreviewLocation);
+							return result;
+						};
+
+						window.history.replaceState = function patchedReplaceState(...args) {
+							const result = originalReplaceState(...args);
+							queueMicrotask(postPreviewLocation);
+							return result;
+						};
+
+						window.addEventListener("popstate", postPreviewLocation);
+						window.addEventListener("hashchange", postPreviewLocation);
+						window.addEventListener("load", postPreviewLocation);
+						queueMicrotask(postPreviewLocation);
 
 						window.open = function patchedOpen(url, target, features) {
 							const href = getBridgeHref(
@@ -451,8 +573,6 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 									],
 								});
 
-								//console.log(result?.code);
-
 								return {
 									contents: result?.code || code,
 									loader: result?.code ? "js" : fallbackLoader,
@@ -463,11 +583,46 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 				],
 			},
 		},
+		serverConfig: {
+			routes: {
+				"/__frame_master_ui_flow__/preview": async (_req, _res) => {
+					await openPreviewFromDevHook(config);
+					return Response.json({ success: true });
+				},
+			},
+		},
 		serverStart: {
-			async dev_main() {
-				await openPreviewFromDevHook(config);
-			}
-		}
+			dev_main() {
+				setTimeout(() => {
+					const url = new URL(config.webviewUrl as string);
+					url.pathname = "/__frame_master_ui_flow__/preview";
+
+					const intval = setInterval(() => {
+						fetch(url.toString())
+							.then((res) =>
+								res.ok
+									? (res.json() as Promise<{ success: boolean }>)
+									: Promise.reject(new Error("Failed to trigger preview open")),
+							)
+							.then((res) => {
+								if (res?.success) {
+									clearInterval(intval);
+								} else {
+									console.warn(
+										"[frame-master-react-ui-flow] Failed to trigger VS Code preview open via dev hook.",
+									);
+								}
+							})
+							.catch((res) => {
+								console.warn(
+									"[frame-master-react-ui-flow] Failed to trigger VS Code preview open via dev hook.",
+									res instanceof Error ? res.message : res,
+								);
+							});
+					}, 3000);
+				}, 3000);
+			},
+		},
 	};
 }
 
