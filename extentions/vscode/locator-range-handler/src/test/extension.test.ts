@@ -299,6 +299,10 @@ suite("Locator Range Handler", () => {
 		assert.match(html, /reload-preview/);
 		assert.match(html, /id="location-form"/);
 		assert.match(html, /id="location-input"/);
+		assert.match(
+			html,
+			/value="http:\/\/127\.0\.0\.1:3000\/app"/,
+		);
 		assert.match(html, /frame-master-preview-location/);
 		assert.match(
 			html,

@@ -742,6 +742,13 @@ function getWebviewHtml(state: LocatorPanelState) {
 	const previewSourceUrl = state.previewSourceUrl
 		? escapeHtml(state.previewSourceUrl)
 		: "";
+	const previewDisplayUrl = state.previewSourceUrl
+		? escapeHtml(
+				appendQueryValue(state.previewSourceUrl, PREVIEW_MODE_QUERY_KEY, "")
+					.replace(/([?&])frameMasterPreview=(?:&|$)/, "$1")
+					.replace(/[?&]$/, ""),
+			)
+		: "";
 	const previewOriginJson = JSON.stringify(state.previewOrigin)
 		.replace(/</g, "\\u003c")
 		.replace(/>/g, "\\u003e");
@@ -880,7 +887,7 @@ function getWebviewHtml(state: LocatorPanelState) {
 	<header class="preview-toolbar">
 		<form id="location-form">
 			<label for="location-input">Route</label>
-			<input id="location-input" type="text" spellcheck="false" value="${previewSourceUrl}" placeholder="/dashboard or https://..." />
+			<input id="location-input" type="text" spellcheck="false" value="${previewDisplayUrl}" placeholder="/dashboard or https://..." />
 			<button type="submit">Go</button>
 		</form>
 	</header>
@@ -990,7 +997,21 @@ function getWebviewHtml(state: LocatorPanelState) {
 
 	function updateLocationInput(value) {
 		if (locationInput instanceof HTMLInputElement) {
-			locationInput.value = value;
+			locationInput.value = getDisplayLocation(value);
+		}
+	}
+
+	function getDisplayLocation(value) {
+		if (!value) {
+			return value;
+		}
+
+		try {
+			const parsedUrl = new URL(value);
+			parsedUrl.searchParams.delete(${JSON.stringify(PREVIEW_MODE_QUERY_KEY)});
+			return parsedUrl.toString();
+		} catch {
+			return value;
 		}
 	}
 
