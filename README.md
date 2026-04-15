@@ -100,23 +100,23 @@ Optional boolean.
 Optional boolean.
 
 - `false` or omitted: the plugin opens source locations directly through standard VS Code links or the range-handler URI flow.
-- `true`: when `editor` is `vscode`, the plugin targets the extension's `/webview` route. The companion extension can open a VS Code preview panel, load your app in an iframe, and relay LocatorJS clicks from inside that preview back into the editor.
+- `true`: when `editor` is `vscode` or `cursor`, the plugin targets the extension's `/webview` route. The companion extension can open a preview panel, load your app in an iframe, and relay LocatorJS clicks from inside that preview back into the editor.
 
-`useWebview` takes precedence over `useRangeHandler` for VS Code targets.
+`useWebview` takes precedence over `useRangeHandler` for VS Code-compatible targets.
 
 ### `webviewUrl`
 
 Optional string.
 
-- Used only when `editor` is `vscode` and `useWebview` is `true`.
+- Used only when `editor` is `vscode` or `cursor` and `useWebview` is `true`.
 - The extension loads this URL inside the preview panel iframe.
 - The plugin appends `?frameMasterPreview=vscode` or `&frameMasterPreview=vscode` to the URL so the injected bridge can detect preview mode.
 
 Use a URL that the local VS Code UI host can reach. For local development that is typically something like `http://127.0.0.1:3000`.
 
-When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code startup and auto-open the preview panel when the dev server becomes reachable.
+When the companion extension is installed, `useWebview: true` together with `webviewUrl` also allows the extension to watch that URL on VS Code or Cursor startup and auto-open the preview panel when the dev server becomes reachable.
 
-In addition, the plugin now exposes an internal preview trigger route and uses its `serverStart.dev_main` hook to ping that route once the dev server is up. The route writes a marker file at `.frame-master/frame-master-react-ui-flow.preview.json` and opens that file with `code -r` in the current VS Code instance. The extension watches for that fake file to open, reads the preview options from its JSON payload, opens the preview webview, and then closes the marker tab. The hook is guarded so it only opens once per preview URL in the current process and only when `VSCODE_IPC_HOOK_CLI` is available.
+In addition, the plugin now exposes an internal preview trigger route and uses its `serverStart.dev_main` hook to ping that route once the dev server is up. The route writes a marker file at `.frame-master/frame-master-react-ui-flow.preview.json` and opens that file with `code -r` or `cursor -r` in the current editor instance. The extension watches for that fake file to open, reads the preview options from its JSON payload, opens the preview webview, and then closes the marker tab. The hook is guarded so it only opens once per preview URL in the current process and only when `VSCODE_IPC_HOOK_CLI` is available.
 
 ### `webviewTitle`
 
@@ -126,7 +126,7 @@ Optional string.
 
 ## Optional VS Code handler extension
 
-When `editor: "vscode"` and either `useRangeHandler: true` or `useWebview: true`, the plugin targets the local URI handler extension with the id:
+When `editor: "vscode"` or `editor: "cursor"` and either `useRangeHandler: true` or `useWebview: true`, the plugin targets the local URI handler extension with the id:
 
 ```text
 m2tech-solutions.frame-master-react-ui-flow-locator-range-handler
@@ -146,6 +146,12 @@ npm run package:vsix
 code --install-extension frame-master-react-ui-flow-locator-range-handler.vsix --force
 ```
 
+For Cursor, install the same VSIX with:
+
+```bash
+cursor --install-extension frame-master-react-ui-flow-locator-range-handler.vsix --force
+```
+
 If you are working with WSL, install the extension into the local desktop VS Code UI host, not only the remote WSL extension host.
 
 ## VS Code Webview Features
@@ -153,7 +159,7 @@ If you are working with WSL, install the extension into the local desktop VS Cod
 When `useWebview: true` is enabled and the companion extension is installed, the preview panel supports:
 
 - automatic preview opening when the dev server becomes reachable
-- startup and dev-hook preview opening in the current VS Code instance
+- startup and dev-hook preview opening in the current editor instance
 - a top route bar for manually navigating to `/dashboard`, `/login`, or any full URL
 - route syncing from the iframe back into the route bar when your app navigates internally
 - back, forward, and reload controls in the webview title bar

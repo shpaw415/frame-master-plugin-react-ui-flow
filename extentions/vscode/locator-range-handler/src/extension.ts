@@ -102,6 +102,7 @@ const FRAME_MASTER_CONFIG_FILE_NAMES = [
 	"frame-master.config.js",
 	"frame-master.config.mjs",
 ];
+const SUPPORTED_WEBVIEW_EDITORS = new Set(["vscode", "cursor"]);
 const PREVIEW_MARKER_BASENAME = "frame-master-react-ui-flow.preview.json";
 const PREVIEW_MARKER_TYPE = "frame-master-react-ui-flow.preview";
 
@@ -412,7 +413,12 @@ function parseAutoOpenPreviewConfigs(
 						getObjectPropertyExpression(configArgument, "webviewTitle"),
 					) || WEBVIEW_PANEL_TITLE;
 
-				if (editor !== "vscode" || useWebview !== true || !previewUrl) {
+				if (
+					!editor ||
+					!SUPPORTED_WEBVIEW_EDITORS.has(editor) ||
+					useWebview !== true ||
+					!previewUrl
+				) {
 					return;
 				}
 
