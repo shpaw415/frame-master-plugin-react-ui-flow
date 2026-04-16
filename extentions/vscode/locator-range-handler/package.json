@@ -3,7 +3,7 @@
 	"displayName": "Frame Master React UI Flow Locator Range Handler",
 	"publisher": "m2tech-solutions",
 	"description": "Opens LocatorJS links and selects the matching JSX range in VS Code. Supports for frame-master plugin: frame-master-react-ui-flow",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"license": "MIT",
 	"private": false,
 	"engines": {
