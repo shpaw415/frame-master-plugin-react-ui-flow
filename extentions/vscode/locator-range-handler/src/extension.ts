@@ -78,6 +78,14 @@ type PreviewMarkerPayload = {
 	previewTitle?: string;
 };
 
+type PreviewMarkerDocumentActions = {
+	showPanel: (
+		context: vscode.ExtensionContext,
+		state: LocatorPanelState,
+	) => Promise<void>;
+	closeTab: (uri: vscode.Uri) => Promise<void>;
+};
+
 const WEBVIEW_PANEL_VIEW_TYPE =
 	"frameMasterReactUiFlowLocatorRangeHandler.preview";
 const WEBVIEW_PANEL_TITLE = "Frame Master UI Flow";
@@ -108,6 +116,16 @@ const PREVIEW_MARKER_TYPE = "frame-master-react-ui-flow.preview";
 
 let locatorWebviewPanel: vscode.WebviewPanel | undefined;
 let didHandleLocatorUri = false;
+const pendingPreviewMarkerDocuments = new Set<string>();
+let previewMarkerDocumentAttemptCount = 0;
+let previewMarkerDocumentHandleCount = 0;
+let locatorWebviewPanelOpenCount = 0;
+let lastPreviewMarkerDocumentUri = "";
+
+const defaultPreviewMarkerDocumentActions: PreviewMarkerDocumentActions = {
+	showPanel: showLocatorWebviewPanel,
+	closeTab: closePreviewMarkerTab,
+};
 
 function normalizePosixPath(filePath: string) {
 	return filePath.replace(/\\/g, "/");
@@ -1172,6 +1190,8 @@ async function showLocatorWebviewPanel(
 	context: vscode.ExtensionContext,
 	state: LocatorPanelState,
 ) {
+	locatorWebviewPanelOpenCount += 1;
+
 	const resolvedState = await resolveLocatorPanelState(state);
 	const preferredViewColumn = getPreferredWebviewViewColumn();
 
@@ -1261,19 +1281,48 @@ async function maybeOpenPreviewMarkerDocument(
 	context: vscode.ExtensionContext,
 	document: vscode.TextDocument,
 ) {
+	return maybeOpenPreviewMarkerDocumentWithActions(
+		context,
+		document,
+		defaultPreviewMarkerDocumentActions,
+	);
+}
+
+async function maybeOpenPreviewMarkerDocumentWithActions(
+	context: vscode.ExtensionContext,
+	document: vscode.TextDocument,
+	actions: PreviewMarkerDocumentActions,
+) {
+	previewMarkerDocumentAttemptCount += 1;
+	lastPreviewMarkerDocumentUri = document.uri.toString();
+
 	if (!isPreviewMarkerDocument(document)) {
-		return;
+		return false;
 	}
 
-	const state = parsePreviewMarkerPayload(document.getText());
+	const documentKey = document.uri.toString();
 
-	if (!state) {
-		return;
+	if (pendingPreviewMarkerDocuments.has(documentKey)) {
+		return false;
 	}
 
-	didHandleLocatorUri = true;
-	await showLocatorWebviewPanel(context, state);
-	await closePreviewMarkerTab(document.uri);
+	pendingPreviewMarkerDocuments.add(documentKey);
+
+	try {
+		const state = parsePreviewMarkerPayload(document.getText());
+
+		if (!state) {
+			return false;
+		}
+
+		previewMarkerDocumentHandleCount += 1;
+		didHandleLocatorUri = true;
+		await actions.showPanel(context, state);
+		await actions.closeTab(document.uri);
+		return true;
+	} finally {
+		pendingPreviewMarkerDocuments.delete(documentKey);
+	}
 }
 
 function openLocatorWebview(context: vscode.ExtensionContext, uri: vscode.Uri) {
@@ -1380,6 +1429,22 @@ export const __testHooks = {
 	isLocatorWebviewMessage,
 	isLocatorUriMessage,
 	isLocatorWebviewControlMessage,
+	maybeOpenPreviewMarkerDocumentWithActions,
+	isLocatorWebviewPanelOpen: () => !!locatorWebviewPanel,
+	getLocatorWebviewPanelTitle: () => locatorWebviewPanel?.title,
+	disposeLocatorWebviewPanel: () => {
+		locatorWebviewPanel?.dispose();
+	},
+	getPreviewMarkerDocumentHandleCount: () => previewMarkerDocumentHandleCount,
+	getPreviewMarkerDocumentAttemptCount: () => previewMarkerDocumentAttemptCount,
+	getLocatorWebviewPanelOpenCount: () => locatorWebviewPanelOpenCount,
+	getLastPreviewMarkerDocumentUri: () => lastPreviewMarkerDocumentUri,
+	resetPreviewDiagnostics: () => {
+		previewMarkerDocumentAttemptCount = 0;
+		previewMarkerDocumentHandleCount = 0;
+		locatorWebviewPanelOpenCount = 0;
+		lastPreviewMarkerDocumentUri = "";
+	},
 	getWebviewHtml,
 };
 
@@ -1399,6 +1464,16 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument((document) => {
 			void maybeOpenPreviewMarkerDocument(context, document);
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.window.onDidChangeActiveTextEditor((editor) => {
+			if (!editor) {
+				return;
+			}
+
+			void maybeOpenPreviewMarkerDocument(context, editor.document);
 		}),
 	);
 

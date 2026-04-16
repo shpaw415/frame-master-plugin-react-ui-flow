@@ -9,7 +9,9 @@
 	"dependencies": {
 		"@babel/core": "^7.29.0",
 		"@locator/runtime": "^0.5.1",
-		"@locator/shared": "^0.5.0"
+		"@locator/shared": "^0.5.0",
+		"@babel/preset-typescript": "^7.28.5",
+		"@babel/preset-react": "^7.28.5"
 	},
 	"devDependencies": {
 		"@types/babel__core": "^7.20.5",

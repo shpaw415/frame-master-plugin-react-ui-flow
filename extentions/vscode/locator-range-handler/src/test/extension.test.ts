@@ -1,7 +1,13 @@
 import * as assert from "assert";
 import { suite, test } from "mocha";
 import * as vscode from "vscode";
-import { __testHooks } from "../extension";
+import type * as SourceExtensionModule from "../extension";
+
+const { __testHooks } =
+	require("../../dist/extension.js") as typeof SourceExtensionModule;
+
+const EXTENSION_ID =
+	"m2tech-solutions.frame-master-react-ui-flow-locator-range-handler";
 
 function createLocatorUri(values: Record<string, string>) {
 	return vscode.Uri.from({
@@ -21,6 +27,26 @@ function createPreviewUri(values: Record<string, string>) {
 		path: "/preview",
 		query: new URLSearchParams(values).toString(),
 	});
+}
+
+async function waitForCondition(
+	condition: () => boolean,
+	timeoutMs: number,
+	message: string,
+) {
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < timeoutMs) {
+		if (condition()) {
+			return;
+		}
+
+		await new Promise<void>((resolve) => {
+			globalThis.setTimeout(resolve, 50);
+		});
+	}
+
+	throw new Error(message);
 }
 
 suite("Locator Range Handler", () => {
@@ -222,6 +248,147 @@ suite("Locator Range Handler", () => {
 		assert.strictEqual(state?.previewOrigin, "http://127.0.0.1:3000");
 	});
 
+	test("opens the webview when a preview marker document is handled", async () => {
+		const documentUri = vscode.Uri.file(
+			"/workspace/certorify/.frame-master/frame-master-react-ui-flow.preview.json",
+		);
+		const document = {
+			uri: documentUri,
+			getText: () =>
+				JSON.stringify({
+					type: "frame-master-react-ui-flow.preview",
+					previewUrl: "http://127.0.0.1:3000/app",
+					previewTitle: "Marker Trigger Preview",
+				}),
+		} as vscode.TextDocument;
+
+		const shownStates: Array<
+			ReturnType<typeof __testHooks.createLocatorPanelState>
+		> = [];
+		const closedUris: vscode.Uri[] = [];
+
+		const didOpen = await __testHooks.maybeOpenPreviewMarkerDocumentWithActions(
+			{} as vscode.ExtensionContext,
+			document,
+			{
+				showPanel: async (_context, state) => {
+					shownStates.push(state);
+				},
+				closeTab: async (uri) => {
+					closedUris.push(uri);
+				},
+			},
+		);
+
+		assert.strictEqual(didOpen, true);
+		assert.strictEqual(shownStates.length, 1);
+		assert.strictEqual(shownStates[0]?.previewTitle, "Marker Trigger Preview");
+		assert.strictEqual(shownStates[0]?.previewUrl, "http://127.0.0.1:3000/app");
+		assert.strictEqual(closedUris.length, 1);
+		assert.strictEqual(closedUris[0]?.toString(), documentUri.toString());
+	});
+
+	test("opening the preview marker file creates the preview webview tab", async function () {
+		this.timeout(10000);
+
+		const extension = vscode.extensions.getExtension(EXTENSION_ID);
+		assert.ok(extension, "Extension should be available in the test host.");
+		await extension?.activate();
+
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		assert.ok(
+			workspaceFolder,
+			"A workspace folder is required for integration tests.",
+		);
+
+		if (!workspaceFolder) {
+			throw new Error("A workspace folder is required for integration tests.");
+		}
+
+		const testRootUri = vscode.Uri.joinPath(
+			workspaceFolder.uri,
+			".vscode-test-preview",
+			`${Date.now()}`,
+		);
+
+		const markerDirectoryUri = vscode.Uri.joinPath(
+			testRootUri,
+			".frame-master",
+		);
+		const markerUri = vscode.Uri.joinPath(
+			markerDirectoryUri,
+			"frame-master-react-ui-flow.preview.json",
+		);
+
+		await vscode.workspace.fs.createDirectory(markerDirectoryUri);
+		await vscode.workspace.fs.writeFile(
+			markerUri,
+			new TextEncoder().encode(
+				JSON.stringify(
+					{
+						type: "frame-master-react-ui-flow.preview",
+						previewUrl: "http://127.0.0.1:3000/app",
+						previewTitle: "Integration Marker Preview",
+					},
+					null,
+					2,
+				),
+			),
+		);
+
+		__testHooks.resetPreviewDiagnostics();
+		__testHooks.disposeLocatorWebviewPanel();
+
+		try {
+			const document = await vscode.workspace.openTextDocument(markerUri);
+
+			try {
+				await vscode.window.showTextDocument(document, {
+					preview: false,
+					preserveFocus: false,
+				});
+			} catch {
+				// The marker tab may be closed immediately when the extension swaps it for the preview webview.
+			}
+
+			await waitForCondition(
+				() => __testHooks.getPreviewMarkerDocumentAttemptCount() > 0,
+				5000,
+				"Expected the preview marker open listeners to observe the opened document.",
+			);
+
+			await waitForCondition(
+				() => __testHooks.getPreviewMarkerDocumentHandleCount() > 0,
+				5000,
+				`Expected the preview marker document handler to run after opening the marker file. Last observed document URI: ${__testHooks.getLastPreviewMarkerDocumentUri()}`,
+			);
+
+			assert.ok(
+				__testHooks.getLocatorWebviewPanelOpenCount() > 0,
+				"Expected the preview webview opening path to run after handling the marker document.",
+			);
+
+			await waitForCondition(
+				() => __testHooks.isLocatorWebviewPanelOpen(),
+				5000,
+				"Expected the preview webview panel to open after showing the marker document.",
+			);
+
+			assert.strictEqual(__testHooks.isLocatorWebviewPanelOpen(), true);
+			assert.match(
+				__testHooks.getLocatorWebviewPanelTitle() || "",
+				/Integration Marker Preview|Frame Master UI Flow/,
+			);
+		} finally {
+			__testHooks.disposeLocatorWebviewPanel();
+
+			await vscode.workspace.fs.delete(testRootUri, {
+				recursive: true,
+				useTrash: false,
+			});
+		}
+	});
+
 	test("extracts auto-open preview config from frame master source", () => {
 		const configs = __testHooks.parseAutoOpenPreviewConfigs(`
 			const plugins = [
@@ -321,10 +488,7 @@ suite("Locator Range Handler", () => {
 		assert.match(html, /reload-preview/);
 		assert.match(html, /id="location-form"/);
 		assert.match(html, /id="location-input"/);
-		assert.match(
-			html,
-			/value="http:\/\/127\.0\.0\.1:3000\/app"/,
-		);
+		assert.match(html, /value="http:\/\/127\.0\.0\.1:3000\/app"/);
 		assert.match(html, /frame-master-preview-location/);
 		assert.match(
 			html,

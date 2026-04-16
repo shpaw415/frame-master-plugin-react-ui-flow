@@ -220,7 +220,7 @@ async function openPreviewFromDevHook(config: UIFlowPluginConfig) {
 
 	const markerPath = await writePreviewOpenMarker(config);
 
-	const result = Bun.spawn({
+	const result = Bun.spawnSync({
 		cmd: [getEditorCliCommand(config.editor), "-r", markerPath],
 		env: currentVSCodeCliEnv,
 	});

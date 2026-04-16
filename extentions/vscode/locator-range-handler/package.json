@@ -53,11 +53,7 @@
 	},
 	"activationEvents": [
 		"onUri",
-		"onStartupFinished",
-		"workspaceContains:frame-master.config.ts",
-		"workspaceContains:frame-master.config.mts",
-		"workspaceContains:frame-master.config.js",
-		"workspaceContains:frame-master.config.mjs"
+		"onStartupFinished"
 	],
 	"main": "./dist/extension.js",
 	"scripts": {
@@ -73,7 +69,8 @@
 		"pretest": "npm run compile-tests && npm run compile && npm run lint",
 		"check-types": "tsc --noEmit",
 		"lint": "eslint src",
-		"test": "vscode-test"
+		"test": "vscode-test",
+		"package:install": "npm run package:vsix &&  code --install-extension frame-master-react-ui-flow-locator-range-handler.vsix"
 	},
 	"devDependencies": {
 		"@types/mocha": "^10.0.10",
