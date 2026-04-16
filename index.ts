@@ -10,6 +10,7 @@ import type {
 import type { AdapterId } from "@locator/runtime/dist/consts";
 import type { Target } from "@locator/shared";
 import type { FrameMasterPlugin } from "frame-master/plugin";
+import { verboseLog } from "frame-master/utils";
 
 export type UIFlowPluginConfig = {
 	env: "windows" | "wsl" | "linux";
@@ -625,10 +626,9 @@ function UIFlowPlugin(config: UIFlowPluginConfig): FrameMasterPlugin {
 									);
 								}
 							})
-							.catch((res) => {
-								console.warn(
-									"[frame-master-react-ui-flow] Failed to trigger VS Code preview open via dev hook.",
-									res instanceof Error ? res.message : res,
+							.catch(() => {
+								verboseLog(
+									"[frame-master-react-ui-flow] Failed to trigger VS Code preview open via dev hook, will retry...",
 								);
 							});
 					}, 3000);
